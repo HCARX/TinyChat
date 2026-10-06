@@ -357,6 +357,25 @@ function tc_remove_provider(&$db, $id) {
     return true;
 }
 
+// 按字符上限截断文本,但不留半截 Markdown 图片。
+// 用户消息的 content 里内联着 ![名](data:image/png;base64,...),单张图编码后可达数十万字符,
+// 直接 substr 会把它拦腰截断:剩下的半截 base64 既不是图片也不是链接,渲染端只能整段当
+// 普通文字画出来 —— 换设备同步后看到的就是「一堵乱码」(本机有完整 attachments,不走这条路)。
+// 图片本体在 attachments[].dataUrl 里另有 8MB 上限、完整随同步保留,渲染端据此重建。
+function tc_md_safe_cut($s, $n) {
+    $s = (string) $s;
+    if (strlen($s) <= $n) return $s;
+    $cut = substr($s, 0, $n);
+    $open = strrpos($cut, '![');
+    if ($open === false) return $cut;
+    $tail = substr($cut, $open);
+    // 结构内还有闭合括号:说明最后一个 [! 是完整的,截断点在它之后,不必回退
+    if (strpos($tail, ')') !== false) return $cut;
+    // 只在确实是图片/链接结构时回退,普通文本里出现的 "![" 不动
+    if (!preg_match('/^!\[[^\]]*\]\(\s*(?:data:|https?:|\/)/', $tail)) return $cut;
+    return rtrim(substr($cut, 0, $open));
+}
+
 function tc_sanitize_chats($chats) {
     if (!is_array($chats)) return array();
     $out = array();
@@ -371,7 +390,7 @@ function tc_sanitize_chats($chats) {
                 $role = isset($m['role']) && in_array($m['role'], array('user', 'assistant', 'system'), true) ? $m['role'] : 'assistant';
                 $msg = array(
                     'role' => $role,
-                    'content' => substr((string) (array_key_exists('content', $m) && $m['content'] !== null ? $m['content'] : ''), 0, 200000),
+                    'content' => tc_md_safe_cut(array_key_exists('content', $m) && $m['content'] !== null ? $m['content'] : '', 200000),
                 );
                 // 原始输入文本与附件(图片 dataUrl / 解析正文)必须随同步保留,
                 // 否则多端合并(云端按 updatedAt 覆盖)会凭空丢附件、编辑/重发失效
@@ -452,7 +471,7 @@ function tc_sanitize_chats($chats) {
                     foreach (array_slice($m['versions'], -12) as $v) {
                         if (!is_array($v)) continue;
                         $vers[] = array(
-                            'content' => substr((string) (isset($v['content']) ? $v['content'] : ''), 0, 200000),
+                            'content' => tc_md_safe_cut(isset($v['content']) ? $v['content'] : '', 200000),
                             'reasoning' => substr((string) (isset($v['reasoning']) ? $v['reasoning'] : ''), 0, 200000),
                             'followUps' => isset($v['followUps']) && is_array($v['followUps']) ? array_slice($v['followUps'], 0, 8) : array(),
                             'citations' => isset($v['citations']) && is_array($v['citations']) ? array_slice($v['citations'], 0, 20) : array(),
@@ -523,7 +542,7 @@ function tc_sanitize_share_messages($messages) {
     $out = array();
     foreach (array_slice($messages, -200) as $m) {
         if (!is_array($m)) continue;
-        $content = substr((string) (isset($m['content']) && $m['content'] !== null ? $m['content'] : ''), 0, 200000);
+        $content = tc_md_safe_cut(isset($m['content']) && $m['content'] !== null ? $m['content'] : '', 200000);
         if ($content === '') continue;
         $out[] = array(
             'role' => (isset($m['role']) && in_array($m['role'], array('user', 'assistant'), true)) ? $m['role'] : 'assistant',

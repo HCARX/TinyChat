@@ -1790,6 +1790,36 @@ function renderElapsed(container, msg) {
   mo.observe($('messages'), { childList: true, subtree: true });
   update();
 })();
+// 用户消息里的图片一律按 attachments 重建,不直接信 content 里的内联拷贝。
+// 同一张图在消息里有两份:content 内的 ![名](data:image/...;base64,...) 与 attachments[].dataUrl。
+// 云端同步对 content 有 200000 字符上限(见 lib/api.php tc_sanitize_chats),大图会被从中间切断,
+// 剩下的半截 base64 既不是图片也不是链接,只能整段当文字画出来 —— 换设备登录后看到的
+// 「一堆字符」就是它。attachments[].dataUrl 的上限是 8MB,是更可靠的载体,这里据它重建。
+function userMsgDisplay(m, shown) {
+  const atts = Array.isArray(m && m.attachments) ? m.attachments : [];
+  const imgs = atts.filter((a) => a && a.type === 'image' && a.dataUrl
+    && window.OCMultimodal && window.OCMultimodal.toMarkdown);
+  if (!imgs.length) return shown;
+  let i = 0;
+  // 正文里每个 data: 图片片段(含被截断、没有右括号的残尾)都换成附件里的完整 markdown,
+  // 位置保持不变;附件里没有对应的(极少数情况)保留原样,绝不删用户内容。
+  let out = String(shown || '').replace(/!\[[^\]]*\]\(\s*data:[^)\s]*\)?/g, (match) => (
+    i < imgs.length ? window.OCMultimodal.toMarkdown(imgs[i++]) : match
+  ));
+  // 附件里有、正文里已丢失的(没在 content 里留下任何痕迹的)补到末尾
+  while (i < imgs.length) out = (out ? out + '\n\n' : '') + window.OCMultimodal.toMarkdown(imgs[i++]);
+  return out;
+}
+// 历史数据(本次修复前同步过的)里可能已经存在被截断的图片片段:![名](data:image/png;base64,AAAA…
+// 末尾没有右括号,Markdown 只能当普通文字画出来 —— 就是用户看到的「一堆字符」。
+// 用户消息可以从 attachments 完整重建(见上);助手消息没有可依赖的副本,只能把这段残片
+// 收成一句话,避免整屏乱码。只匹配「到字符串末尾仍未闭合」的 data 图片,完整图片不受影响。
+function stripBrokenDataImages(text) {
+  return String(text || '').replace(
+    /!\[([^\]]*)\]\(\s*data:image\/[a-z0-9.+-]*;?(?:base64)?,[^\s)]*$/i,
+    (mm, alt) => '（图片「' + (alt || '未命名') + '」在同步时被截断，已无法显示）'
+  );
+}
 function buildMsgNode(m, chat, idx) {
   const role = m.role || 'assistant';
   const div = document.createElement('div');
@@ -1886,7 +1916,9 @@ function buildMsgNode(m, chat, idx) {
     } else {
       const root = document.createElement('div');
       contentDiv.appendChild(root);
-      window.OCRenderer.renderInto(root, m.content || '');
+      // 历史数据里被同步截断的 data 图片只剩半截 base64,渲染出来就是一屏乱码;
+      // 助手消息没有 attachments 可重建,这里把残片收成一句说明。
+      window.OCRenderer.renderInto(root, stripBrokenDataImages(m.content || ''));
       highlightGroupMentions(root, chat);
       // HTML/SVG 代码块附加「在 Artifacts 中打开」按钮
       if (window.OCMultimodal && window.OCMultimodal.enhanceArtifactButtons) {
@@ -1907,6 +1939,9 @@ function buildMsgNode(m, chat, idx) {
     // 早期版本点「整个文件夹」会漏删输入框里正在输入的 @,于是消息开头多一个孤立的 @
     // (现已修)。按「带笔记上下文 + 开头是孤立 @」识别,用户自己写的 @未分类 不受影响。
     if (raw.indexOf(NOTE_CTX_SEP) >= 0) shown = shown.replace(/^\s*@(?=\s|$)\s*/, '');
+    // 图片以附件为准确来源重建(云端同步会截断 content 里的内联 base64);
+    // 连附件副本都被上限裁掉的极端情况,再把残片收成一句说明,不留一屏乱码。
+    shown = stripBrokenDataImages(userMsgDisplay(m, shown));
     const root = document.createElement('div');
     contentDiv.appendChild(root);
     // 用户输入的 HTML 按字面显示而不是解析:先转义再走 Markdown(表格/代码/公式仍正常),

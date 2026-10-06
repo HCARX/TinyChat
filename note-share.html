@@ -15,17 +15,17 @@
 <meta name="twitter:card" content="summary">
 <link rel="icon" type="image/svg+xml" href="./logo-icon.svg">
 <link rel="apple-touch-icon" href="./logo-icon.svg">
-<link rel="stylesheet" href="/static/css/style.min.css?v=2.0.139">
-<link rel="stylesheet" href="/vendor/highlight/github.min.css?v=2.0.139" id="hljs-theme">
-<link rel="stylesheet" href="/vendor/katex/katex.min.css?v=2.0.139">
-<link rel="stylesheet" href="/static/css/enhanced.min.css?v=2.0.139">
-<link rel="stylesheet" href="/static/css/refine.min.css?v=2.0.139">
-<link rel="stylesheet" href="/static/css/redesign.min.css?v=2.0.139">
-<link rel="stylesheet" href="/static/css/polish.min.css?v=2.0.139">
-<link rel="stylesheet" href="/static/css/markdown.min.css?v=2.0.139">
-<link rel="stylesheet" href="/static/css/chrome.min.css?v=2.0.139">
-<script src="/static/js/theme-boot.min.js?v=2.0.139"></script>
-<script src="/static/js/perf.min.js?v=2.0.139"></script>
+<link rel="stylesheet" href="/static/css/style.min.css?v=2.0.141">
+<link rel="stylesheet" href="/vendor/highlight/github.min.css?v=2.0.141" id="hljs-theme">
+<link rel="stylesheet" href="/vendor/katex/katex.min.css?v=2.0.141">
+<link rel="stylesheet" href="/static/css/enhanced.min.css?v=2.0.141">
+<link rel="stylesheet" href="/static/css/refine.min.css?v=2.0.141">
+<link rel="stylesheet" href="/static/css/redesign.min.css?v=2.0.141">
+<link rel="stylesheet" href="/static/css/polish.min.css?v=2.0.141">
+<link rel="stylesheet" href="/static/css/markdown.min.css?v=2.0.141">
+<link rel="stylesheet" href="/static/css/chrome.min.css?v=2.0.141">
+<script src="/static/js/theme-boot.min.js?v=2.0.141"></script>
+<script src="/static/js/perf.min.js?v=2.0.141"></script>
 <style>
   .note-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
   .note-tag { font-size: 12px; padding: 2px 10px; border-radius: 999px; background: var(--bg-code, rgba(0,0,0,.05)); color: var(--text-secondary, #666); }
@@ -36,8 +36,23 @@
   .note-editor input.note-title-input { width: 100%; margin-bottom: 10px; padding: 10px 12px; border-radius: 10px;
     border: 1px solid var(--hairline-strong, rgba(0,0,0,.12)); background: var(--bg-input, #fff); color: var(--text, #1d1d1f); font-size: 15px; }
   .note-editor .row { display: flex; gap: 8px; margin: 10px 0 16px; align-items: center; flex-wrap: wrap; }
-  .share-preview { border: 1px solid var(--hairline, rgba(0,0,0,.06)); border-radius: 14px; padding: 6px 18px; background: var(--bg-surface, #fff); }
-  /* 引用块:细线左缘,不用填充矩形 */
+
+  /* 笔记正文与「应用内预览」同一套排版。
+     markdown.css 的 108 条正文规则全部挂在 .msg.assistant .md-prose 下,没有这层
+     祖先就一条都不生效 —— 此前正文直接渲染进裸 md-prose 容器,于是标题是浏览器
+     默认的 28px、引用块没有左缘细线、表格没有网格,整页看着像没加样式。
+     这里补齐 .msg.assistant 包装,并抹掉聊天消息流特有的约束(气泡宽度/行距),
+     使分享页与默认主题下的应用内预览逐条一致。 */
+  .share-preview {
+    padding: 10px 22px 26px;
+    background: var(--bg-surface, #fff);
+    border-radius: 12px;
+    box-shadow: var(--shadow-sm);
+  }
+  .share-preview .msg { padding: 8px 0; }
+  /* 聊天里气泡限宽 82%/640px;笔记正文要占满整栏,不受该约束 */
+  .share-page .share-preview .msg .msg-content { max-width: none; }
+  /* 引用块:细线左缘,不用填充矩形(与笔记编辑器的预览一致) */
   .share-preview .msg.assistant .md-prose blockquote {
     background: transparent; border: 0; border-left: 2px solid var(--hairline-strong, rgba(0,0,0,.14));
     border-radius: 0; padding: 2px 0 2px 13px; color: var(--text-secondary, #555);
@@ -56,10 +71,10 @@
   <main class="share-main" id="note-root">
     <p class="muted">正在加载笔记…</p>
   </main>
-  <script defer src="/static/js/config.min.js?v=2.0.139"></script>
-  <script defer src="/static/js/icons.min.js?v=2.0.139"></script>
-  <script defer src="/static/js/renderer.min.js?v=2.0.139"></script>
-  <script defer src="/static/js/office-formula-copy.min.js?v=2.0.139"></script>
+  <script defer src="/static/js/config.min.js?v=2.0.141"></script>
+  <script defer src="/static/js/icons.min.js?v=2.0.141"></script>
+  <script defer src="/static/js/renderer.min.js?v=2.0.141"></script>
+  <script defer src="/static/js/office-formula-copy.min.js?v=2.0.141"></script>
   <script>
     (function () {
       const root = document.getElementById('note-root');
@@ -99,7 +114,11 @@
         if (tags.length) html += '<div class="note-tags">' + tags.map((t) => '<span class="note-tag">#' + escapeHtml(t) + '</span>').join('') + '</div>';
         if (note.bodyOnly !== false) html += '<p class="share-note-hint muted">本页仅分享笔记正文，图片与附件不随分享显示。</p>';
         else html += '<p class="share-note-hint muted">本页已开放笔记附件，可直接查看与下载。</p>';
-        html += '<div class="share-preview"><div class="messages" id="note-body"></div></div>';
+        // 必须包一层 .msg.assistant:.md-prose 的正文排版规则全部挂在它下面,
+        // 少了这层祖先,标题/引用/表格/代码块都退回浏览器默认样式。
+        html += '<div class="share-preview">'
+          + '<div class="msg assistant"><div class="msg-content" id="note-body"></div></div>'
+          + '</div>';
         if (note.editable) html += '<div style="margin-top:14px"><button class="btn small" id="note-edit-btn">编辑笔记</button></div>';
         root.innerHTML = html;
         const body = document.getElementById('note-body');
@@ -120,7 +139,8 @@
           + '<button class="btn small" id="ne-cancel">取消</button>'
           + '<span class="muted" id="ne-status"></span>'
           + '</div>'
-          + '<div class="share-preview hidden" id="ne-preview-box"><div class="messages" id="ne-preview-body"></div></div>'
+          + '<div class="share-preview hidden" id="ne-preview-box">'
+          + '<div class="msg assistant"><div class="msg-content" id="ne-preview-body"></div></div></div>'
           + '</div>';
         const ta = document.getElementById('ne-content');
         const box = document.getElementById('ne-preview-box');

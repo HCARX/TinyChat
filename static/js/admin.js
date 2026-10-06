@@ -1586,6 +1586,12 @@ const apModelList = window.OC && window.OC.bindModelChecklist
   })
   : null;
 
+// 表单初次渲染就得有一行空白 Key:AP_KEYS 此前只在「编辑供应商 / 保存后」被填充,
+// 页面刚打开时密钥区是空的(只有一个「+ 添加 Key」按钮),用户会以为没有可填的地方,
+// 必须先点一次添加才出现输入框。放在 apModelList 之后:renderApKeys 会读它
+// (const 的暂时性死区,提前调用会直接抛 ReferenceError)。
+apKeysFromProvider(null);
+
 // 用户自建供应商不出现在管理后台;这里只展示管理员配置的全局供应商
 async function loadProviders() {
   const r = await api('/api/providers');
@@ -4697,6 +4703,8 @@ async function loadNotesSettings() {
   if (body && !body.hidden) await loadNotesUsers();
 }
 async function loadNotesUsers() {
+  // 演示管理员:审阅用户笔记的服务端守卫是硬拒绝,这里直接不发请求(卡片也已隐藏)
+  if (document.body.classList.contains('is-demo-admin')) return;
   const q = ($('notes-user-search') && $('notes-user-search').value.trim()) || '';
   const r = await api('/api/admin/notes' + (q ? '?q=' + encodeURIComponent(q) : ''));
   const d = await r.json();
@@ -5081,6 +5089,8 @@ function imThreadTitle(t) {
 }
 
 async function loadImThreads() {
+  // 演示管理员:聊天查看与留档清理都被服务端拒绝,这里直接不发请求(卡片也已隐藏)
+  if (document.body.classList.contains('is-demo-admin')) return;
   const r = await api('/api/admin/im/threads');
   const d = await r.json();
   if (!r.ok) throw new Error((d.error && d.error.message) || '加载失败');
@@ -5222,6 +5232,14 @@ window.addEventListener('hashchange', () => {
       // 该元素用 class="hidden" 隐藏(.hidden{display:none!important}),
       // 只改 .hidden 属性去不掉类,提示永远出不来。和上面几处一样按类切换。
       if (smtpNote) smtpNote.classList.remove('hidden');
+      // 新增功能里同样属于「个人内容 / 不可逆操作」的两处,服务端已按演示身份拒绝
+      // (笔记审阅、聊天查看与留档清理)。这里把入口整块隐藏,免得点开只看到报错:
+      //  - 「使用笔记的用户」审阅的是用户私人笔记
+      //  - 「会话与留档」能读到聊天原文,且清理留档不随演示快照还原
+      ['notes-users-card', 'im-threads-card'].forEach((id) => {
+        const el = document.getElementById(id);
+        if (el) el.classList.add('hidden');
+      });
     }
     // 全局演示还原窗口:用户表单回填用(所有管理员都拉一次,避免编辑表单写死 10)
     try {

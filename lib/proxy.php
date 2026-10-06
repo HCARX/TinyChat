@@ -3360,6 +3360,18 @@ function tc_generate_images($apiKeyOwner = null) {
             } else {
                 $it['display'] = tc_img_proxy_path($it['url']);
             }
+        } elseif (!empty($it['b64_json'])) {
+            // 上游直接吐 base64(常见于 gpt-image / gemini 系):messages 里的 content 会把
+            // data URL 整段内联,而单张图编码后轻易超过云同步 200000 字符的 content 上限,
+            // 截断后换设备就只剩半截乱码。这里同样落盘取一个短地址,content 随之变小。
+            $storeId = '';
+            if ($archiveEnabled) {
+                try { $storeId = tc_img_store_save_b64($it['b64_json']); } catch (Throwable $e) { $storeId = ''; }
+            }
+            if ($storeId !== '') {
+                $it['store'] = $storeId;
+                $it['display'] = tc_img_store_path($storeId);
+            }
         }
     }
     unset($it);
@@ -3615,6 +3627,22 @@ function tc_img_store_save($url, $maxBytes = 30 * 1024 * 1024) {
     $ct = substr($ctype, 0, 120);
     $head = chr(strlen($ct)) . $ct;
     if (@file_put_contents($dir . '/' . $id . '.bin', $head . $buf, LOCK_EX) === false) return '';
+    return $id;
+}
+// 把一张 base64 图片写入本地留存(与 URL 下载同一目录/格式),返回 id 或 ''
+function tc_img_store_save_b64($b64, $mime = 'image/png') {
+    $b64 = (string) $b64;
+    if ($b64 === '') return '';
+    $bin = base64_decode(str_replace(array("\r", "\n", ' '), '', $b64), true);
+    if ($bin === false || $bin === '') return '';
+    $mime = strtolower(trim((string) $mime));
+    if (strpos($mime, 'image/') !== 0) $mime = 'image/png';
+    $id = substr(sha1($bin . '|' . tc_secret()), 0, 24);
+    $dir = tc_img_store_dir();
+    if (!is_dir($dir) || !is_writable($dir)) return '';
+    $ct = substr($mime, 0, 120);
+    $head = chr(strlen($ct)) . $ct;
+    if (@file_put_contents($dir . '/' . $id . '.bin', $head . $bin, LOCK_EX) === false) return '';
     return $id;
 }
 // 本地留存地址(带签名,供 <img> 同源加载)

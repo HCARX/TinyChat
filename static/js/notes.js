@@ -2947,7 +2947,7 @@
       + '<input readonly id="ns-link" value="' + esc(s ? location.origin + '/n/' + s.token : '') + '">'
       + '<button class="notes-mini-btn" id="ns-copy">' + icon('copy', 13) + '复制</button>'
       + '</div>'
-      + '<label class="ns-expire">链接有效期'
+      + '<label class="ns-expire"><span class="ns-expire-label">链接有效期</span>'
       + '<select id="ns-expire">'
       + '<option value="0">永久有效</option>'
       + '<option value="1">1 天</option>'
@@ -2958,13 +2958,18 @@
       + '<p class="ns-hint" id="ns-hint">' + (s ? '链接实时显示笔记最新内容;重新生成会使旧链接立即失效。' : '开启后可随时关闭或重新生成链接。') + '</p>'
       + '</div>'
       + '<div class="modal-footer">'
-      + (s ? '<button class="btn danger" id="ns-close-share">' + icon('close', 13) + '关闭分享</button>' : '')
+      // 「关闭分享」在未分享时也占位(隐藏),生成成功后原地显形,而不是重排页脚
+      + '<button class="btn danger' + (s ? '' : ' hidden') + '" id="ns-close-share">' + icon('close', 13) + '关闭分享</button>'
       + '<button class="btn' + (s ? '' : ' hidden') + '" id="ns-regen">重新生成链接</button>'
+      // 取消始终存在:生成链接后页脚会多出「关闭分享 / 重新生成」,此前没有退出口,
+      // 用户生成完只能点右上角 ×,窄屏上很容易以为卡住了。
+      + '<button class="btn" id="ns-cancel">取消</button>'
       + '<button class="btn primary" id="ns-apply">' + (s ? '保存设置' : '生成链接') + '</button>'
       + '</div></div>';
     document.body.appendChild(mask);
     const closeDlg = () => { window.OCUI.closeModal(mask); setTimeout(() => mask.remove(), 340); };
     mask.querySelector('[data-close]').addEventListener('click', closeDlg);
+    mask.querySelector('#ns-cancel').addEventListener('click', closeDlg);
     mask.addEventListener('mousedown', (e) => { if (e.target === mask) closeDlg(); });
     const linkRow = mask.querySelector('#ns-link-row');
     // 回填当前有效期(距到期剩余天数就近映射到预设档位)
@@ -2991,6 +2996,9 @@
     const showShare = (share) => {
       linkRow.classList.remove('hidden');
       regenBtn.classList.remove('hidden');
+      // 生成链接成功后「关闭分享」也要显形,否则新分享没法从这个弹窗撤回
+      const closeShareEl = mask.querySelector('#ns-close-share');
+      if (closeShareEl) closeShareEl.classList.remove('hidden');
       mask.querySelector('#ns-link').value = location.origin + '/n/' + share.token;
       hint.textContent = '链接实时显示笔记最新内容;重新生成会使旧链接立即失效。';
     };
@@ -3594,30 +3602,15 @@
       }
     };
 
-    // 先挂底部操作按钮,再做其余渲染:即便下拉/预览环节出错,用户仍有「取消 / 直接保存」可用,
+    // 先挂底部操作按钮,再做其余渲染:即便下拉/预览环节出错,用户仍有「取消 / 保存」可用,
     // 不会留下一个既没内容又没按钮的死弹窗。
-    foot.innerHTML = direct
-      ? '<button class="btn" id="nai-cancel">取消</button><button class="btn primary" id="nai-save">确认保存</button>'
-      : '<button class="btn" id="nai-cancel">取消</button>'
-        + '<button class="btn" id="nai-quick">直接保存（使用 AI 推荐）</button>'
-        + '<button class="btn primary" id="nai-save">确认保存</button>';
+    // 只保留一个「保存」:各字段已用 AI 推荐值预填,commit 读的是表单**当前值**,
+    // 用户改过就存改后的,没改就存推荐值。此前额外的「直接保存（使用 AI 推荐）」
+    // 会用推荐值覆盖用户输入,语义上与「保存」冲突,容易误把改好的内容冲掉。
+    foot.innerHTML = '<button class="btn" id="nai-cancel">取消</button>'
+      + '<button class="btn primary" id="nai-save">保存</button>';
     foot.querySelector('#nai-cancel').addEventListener('click', () => closeArchiveDialog(mask));
     foot.querySelector('#nai-save').addEventListener('click', () => { commit(); });
-    const quick = foot.querySelector('#nai-quick');
-    if (quick) {
-      quick.addEventListener('click', () => {
-        sel.value = plan.folderAction === 'existing' && folderById(plan.targetFolderId) ? plan.targetFolderId : (plan._forceFolder || sel.value);
-        if (plan.folderAction === 'create' && !plan._forceFolder) {
-          sel.value = '__create__';
-          newInput.value = plan.newFolderName || '';
-          newInput.classList.remove('hidden');
-        }
-        body.querySelector('#nai-title').value = plan.noteTitle;
-        body.querySelector('#nai-tags').value = plan.tags.join(', ');
-        ta.value = plan.markdownContent;
-        commit();
-      });
-    }
 
     // 正文先落到 textarea:它是保存时的取值来源,必须无条件写入;
     // 渲染预览属于「锦上添花」,失败不影响保存内容。
@@ -3662,19 +3655,27 @@
     }
     const toggleBtn = body.querySelector('#nai-toggle');
     if (toggleBtn) {
+      // 预览与源码是同一块内容的两种呈现,必须互斥:此前只切 textarea 的 hidden,
+      // 预览区一直留着,于是「切到源码」后渲染结果与源码框上下并存,源码框被挤到
+      // 可视区之外——用户看到的是「点了没反应、也看不到源码」。
+      const showSource = (on) => {
+        previewBox.classList.toggle('hidden', on);
+        ta.classList.toggle('hidden', !on);
+        toggleBtn.innerHTML = on
+          ? icon('eye', 13) + '查看渲染效果'
+          : icon('edit', 13) + '查看 Markdown 源码';
+      };
       toggleBtn.addEventListener('click', () => {
-        const editing = !ta.classList.contains('hidden');
-        if (editing) {
-          ta.classList.add('hidden');
+        const toSource = ta.classList.contains('hidden');
+        if (!toSource) {
           try {
             if (window.OCRenderer) window.OCRenderer.renderInto(previewBox, ta.value);
             else previewBox.textContent = ta.value;
           } catch (e) { previewBox.textContent = ta.value; }
-          toggleBtn.innerHTML = icon('edit', 13) + '查看 Markdown 源码';
-        } else {
-          ta.classList.remove('hidden');
-          toggleBtn.innerHTML = icon('eye', 13) + '查看渲染效果';
         }
+        showSource(toSource);
+        // 切到源码后把光标放进文本框,直接可编辑(少一次点击)
+        if (toSource) { try { ta.focus(); } catch (e) {} }
       });
     }
   }

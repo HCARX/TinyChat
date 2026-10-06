@@ -196,6 +196,20 @@ const wide = await boot(1280, 900);
   check('已分享管理弹窗可见', await shm.isVisible().catch(() => false));
   const body = await page.locator('#shm-body').innerText().catch(() => '');
   check('列表里能看到已分享的笔记', body.includes('编辑器测试笔记'));
+  // 点「取消分享」弹出的确认框必须压在最上层。此前 chrome.css 的 .modal-mask{1600}
+  // 覆盖了 polish.css 的 .oc-confirm-mask{3100}(同权重、后者先加载),确认框实测
+  // 只有 1600,被 1670 的「已分享管理」整个盖住 —— 用户看不到也点不到。
+  const zLayers = await page.evaluate(() => {
+    const shmMask = document.querySelector('.notes-shm-mask');
+    const conf = document.createElement('div');
+    conf.className = 'modal-mask oc-confirm-mask';
+    document.body.appendChild(conf);
+    const zc = getComputedStyle(conf).zIndex;
+    conf.remove();
+    return { shm: shmMask ? getComputedStyle(shmMask).zIndex : null, confirm: zc };
+  });
+  check('确认框层级高于「已分享管理」(' + zLayers.confirm + ' > ' + zLayers.shm + ')',
+    Number(zLayers.confirm) > Number(zLayers.shm));
   const recursive = errs.filter((e) => /Maximum call stack|call stack size/i.test(e));
   check('无「Maximum call stack size exceeded」' + (recursive.length ? ': ' + recursive[0].slice(0, 60) : ''), recursive.length === 0);
   // 关闭再打开一次:关闭回调必须幂等,不能递归也不能把下一个弹窗带走。

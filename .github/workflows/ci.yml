@@ -100,6 +100,10 @@ jobs:
         run: php tests/web-proxy.php
       - name: 拓展功能可见性自检(默认语义 / 仅管理员 / 名单 / 用户组 / 境内 IP 段二分查找)
         run: php tests/feature-access.php
+      - name: 对话云同步截断自检(截断点必须落在 Markdown 之外 / 图片本体靠附件承载)
+        # 用户消息 content 里内联着几十万字符的 base64 图片,截断点落在 base64 中间时
+        # 渲染端只能当文字画出来 —— 这种「只有换设备才复现」的问题,靠 PHP 侧断言截断形状。
+        run: php tests/chat-sync-trunc.php
 
   e2e:
     name: E2E(PHP ${{ matrix.php }})
@@ -149,10 +153,19 @@ jobs:
       # 「点了没反应」类问题(弹窗爆栈、控件排在屏外)只有真浏览器点得出来
       - name: 笔记编辑器自检(已分享管理可打开 / 窄屏能编辑 / 顶栏对齐)
         run: node tests/notes-editor-gui.mjs
+      # markdown.css 的正文排版规则全部挂在 .msg.assistant .md-prose 下,少一层祖先
+      # 就整层静默失效(分享页曾退回浏览器默认样式)。这类问题读代码看不出来,
+      # 只能真浏览器量计算样式,并与应用内预览逐条比对。
+      - name: 笔记分享页排版自检(与默认主题的应用内预览一致)
+        run: node tests/note-share-gui.mjs
       # 「换设备不用重新设置」是本功能的核心承诺,只有「全新浏览器上下文登录同一账号」
       # 这条真实路径能验证:拉了不用、或应用后被当成本机改动再推回去,都会在这里暴露
       - name: 设置云同步 GUI 自检(新设备自动恢复 / 不反复重推)
         run: node tests/settings-sync-gui.mjs
+      # 图片在 content 里内联成几十万字符的 base64,「新设备登录后图片变成一堆字符」
+      # 只有「全新浏览器上下文登录同一账号」这条真实路径能复现(原设备手上有完整附件,不走这条路)。
+      - name: 换设备对话图片渲染自检(附件重建 / 历史残片不画成乱码)
+        run: node tests/chat-sync-image-gui.mjs
       # 浏览器加载正文里的 <img>/<a> 不会带 Authorization 头(登录态是 localStorage
       # 里的 Bearer 令牌),附件「只有本人可读」的判定必须同时认 Cookie —— 这类
       # 「curl 里正常、浏览器里裂图」的问题,只有真浏览器跑得出来。

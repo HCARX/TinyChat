@@ -1730,7 +1730,8 @@ function tc_im_arch_all_ids($db) {
 // GET /api/admin/im/threads
 function tc_api_admin_im_threads() {
     tc_with_db(false, function ($db) {
-        tc_require_admin($db);
+        // 会话成员/消息属个人通信内容,与「不可查看用户对话」同一口径
+        tc_demo_guard(tc_require_admin($db), '演示管理员不可查看用户聊天');
         $idx = tc_im_users_index($db);
         $out = array();
         $liveIds = array();
@@ -1761,7 +1762,8 @@ function tc_api_admin_im_threads() {
 // GET /api/admin/im/view?thread=(在线消息)|archive=(留档)
 function tc_api_admin_im_view() {
     tc_with_db(false, function ($db) {
-        tc_require_admin($db);
+        // 这里直接返回消息原文(含留档),演示身份不得读取
+        tc_demo_guard(tc_require_admin($db), '演示管理员不可查看用户聊天');
         $q = tc_query();
         $tid = (string) (isset($q['thread']) ? $q['thread'] : (isset($q['archive']) ? $q['archive'] : ''));
         if (!tc_im_tid_ok($tid)) tc_fail(400, '会话不存在');
@@ -1812,7 +1814,9 @@ function tc_api_admin_im_view() {
 // POST /api/admin/im/purge {threadIds:[...]}:物理清理留档行,并回收不再被引用的附件文件
 function tc_api_admin_im_purge() {
     tc_with_db(true, function (&$db) {
-        $admin = tc_require_admin($db);
+        // 物理删除留档与附件,而 imDeleted 不在演示快照范围内 —— 一旦执行无法随
+        // 演示到期还原,与「清理用户笔记 / 删除留档对话」同样一律拒绝
+        $admin = tc_demo_guard(tc_require_admin($db), '演示管理员不能清理用户聊天留档');
         if (!tc_rate_limit_check('imadmin:' . $admin['id'], 10)) tc_fail(429, '操作过于频繁，请稍后再试');
         $b = tc_read_json_body(131072);
         $ids = array();

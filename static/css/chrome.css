@@ -4355,6 +4355,10 @@ body.is-demo-admin #users-tbody [data-deluser],
 body.is-demo-admin #users-tbody [data-chats],
 body.is-demo-admin #users-bulk-delete,
 body.is-demo-admin #users-purge-guests { display: none !important; }
+/* 用户私人内容的两块面板:审阅笔记、查看聊天与清理留档。服务端已按演示身份拒绝,
+   这里把卡片整块隐藏,避免「点开只有 403」。留档清理不在演示快照范围内,尤其不能放行。 */
+body.is-demo-admin #notes-users-card,
+body.is-demo-admin #im-threads-card { display: none !important; }
 
 /* 模型清单:生图标记列 */
 .model-table .col-img { width: 56px; text-align: center; }
@@ -4730,6 +4734,13 @@ body.is-demo-admin #users-purge-guests { display: none !important; }
    面板展开时再打开任何弹窗都会滑到面板下面。统一抬到 1600,
    仍低于 toast(3000) 与确认框(3100)。 */
 .modal-mask { z-index: 1600; }
+
+/* 确认/输入弹窗必须始终压在最上层。
+   polish.css 给 .oc-confirm-mask 定的 3100 与这里 .modal-mask 的 1600 权重相同
+   (都是单个类),而本文件在 polish.css 之后加载 —— 后者胜出,确认框实测只有 1600。
+   于是从笔记「已分享管理」(1670) 里点「取消分享」时,弹出的确认框被自己的上层
+   弹窗整个盖住,用户根本看不到、也点不到。这里按阶梯把 3100 重新声明一次。 */
+.oc-confirm-mask { z-index: 3100; }
 
 /* ============ 用户表分页 ============ */
 .users-head-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }

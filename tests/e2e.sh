@@ -612,6 +612,15 @@ assert_contains "演示管理员不可改公告" "$(curl -s -X POST "$BASE/api/a
 assert_contains "演示管理员不可改协议" "$(curl -s -X POST "$BASE/api/admin/settings" -H "$DAUTH" -H "Content-Type: application/json" -d '{"agreementHtml":"<script>alert(1)</script>"}')" '演示管理员不能修改用户协议'
 assert_contains "演示管理员不可查看用户对话" "$(curl -s "$BASE/api/admin/users/chats" -H "$DAUTH")" '演示管理员不能查看用户对话'
 assert_contains "演示管理员不可创建用户" "$(curl -s -X POST "$BASE/api/admin/users" -H "$DAUTH" -H "Content-Type: application/json" -d '{"name":"zzz","password":"pass1234"}')" '演示管理员不能管理用户账号'
+# 新增的「在线聊天 / AI 笔记」管理端同样属于用户私人内容,演示管理员一律拒绝。
+# 尤其留档清理(imDeleted)不在演示快照范围内,一旦放行就无法随演示到期还原。
+assert_contains "演示管理员不可查看聊天会话列表" "$(curl -s "$BASE/api/admin/im/threads" -H "$DAUTH")" '演示管理员不可查看用户聊天'
+assert_contains "演示管理员不可查看聊天原文" "$(curl -s "$BASE/api/admin/im/view?thread=x" -H "$DAUTH")" '演示管理员不可查看用户聊天'
+assert_contains "演示管理员不可清理聊天留档" "$(curl -s -X POST "$BASE/api/admin/im/purge" -H "$DAUTH" -H "Content-Type: application/json" -d '{"threadIds":["x"]}')" '演示管理员不能清理用户聊天留档'
+assert_contains "演示管理员不可查看用户笔记" "$(curl -s "$BASE/api/admin/notes" -H "$DAUTH")" '演示管理员不可查看用户笔记'
+# 真实管理员不受影响(否则就是拦过头了)
+assert_has "真实管理员可列出聊天会话" "$(curl -s "$BASE/api/admin/im/threads" -H "$AUTH")" '"threads":'
+assert_has "真实管理员可列出笔记用户" "$(curl -s "$BASE/api/admin/notes" -H "$AUTH")" '"users":'
 # 真实管理员的改动成为演示的还原基准(不会被演示到期还原冲掉)
 snap_site() { # 读 demoSnapshot 里的基准 siteName
   php -r '$pdo = new PDO("sqlite:" . $argv[1] . "/tinychat.sqlite");

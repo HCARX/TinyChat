@@ -174,12 +174,38 @@ console.log('== 1. 桌面:正常 JSON 计划 → 预览可见 + 可保存 ==');
   await page.waitForSelector('#nai-save', { timeout: 30000 });
   const txt = await page.locator('#nai-preview').innerText().catch(() => '');
   check('预览区显示笔记内容', txt.includes('凑凑火锅'));
-  check('底部「确认保存」按钮已生成', await page.locator('#nai-save').count() === 1);
-  check('底部「直接保存」按钮已生成', await page.locator('#nai-quick').count() === 1);
+  check('底部「保存」按钮已生成', await page.locator('#nai-save').count() === 1);
+  // 曾经有两个保存按钮(直接保存=AI 推荐 / 确认保存=表单值),后者语义上会被前者覆盖,
+  // 用户改完标题再点「直接保存」就把改动冲掉了。现在只保留一个。
+  check('不再有第二个保存按钮(直接保存已合并)', await page.locator('#nai-quick').count() === 0);
   check('文件夹下拉已换成站内控件', await page.locator('.nai-folder-box').count() === 1);
   check('显示了 AI 归档理由', (await page.locator('.nai-reason').innerText()).length > 4);
   check('新建文件夹名已回填', (await page.locator('#nai-newfolder').inputValue()).includes('餐饮'));
 
+  // 「查看 Markdown 源码」:必须真的显示源码(预览隐藏)且可直接编辑
+  check('初始状态:预览可见、源码框隐藏',
+    await page.locator('#nai-preview').isVisible() && !(await page.locator('#nai-ta').isVisible()));
+  await page.locator('#nai-toggle').click();
+  check('切到源码:预览隐藏、源码框可见',
+    !(await page.locator('#nai-preview').isVisible()) && (await page.locator('#nai-ta').isVisible()));
+  const srcVisible = await page.evaluate(() => {
+    const ta = document.getElementById('nai-ta');
+    const r = ta.getBoundingClientRect();
+    return { h: r.height, w: r.width, top: r.top, bottom: r.bottom, vh: window.innerHeight };
+  });
+  check('源码框在视口内可见(没有被预览挤到屏幕外)',
+    srcVisible.h > 40 && srcVisible.w > 40 && srcVisible.bottom > 0 && srcVisible.top < srcVisible.vh);
+  check('源码框不是只读', await page.locator('#nai-ta').evaluate((el) => !el.readOnly));
+  // 真的敲进去:编辑后的正文要在保存时生效
+  await page.locator('#nai-ta').click();
+  await page.locator('#nai-ta').press('End');
+  await page.locator('#nai-ta').type('\n\n用户追加的关键结论：门店扩张速度快。');
+  await page.locator('#nai-toggle').click();
+  check('切回渲染:源码框隐藏、预览恢复',
+    await page.locator('#nai-preview').isVisible() && !(await page.locator('#nai-ta').isVisible()));
+
+  // 改过的标题 + 改过的正文都要落库(单按钮 = 以表单当前值为准)
+  await page.locator('#nai-title').fill('我改过的标题');
   const box = await page.locator('#nai-save').boundingBox();
   check('保存按钮可见可点', !!box && box.width > 0 && box.height > 0);
   await page.locator('#nai-save').click();
@@ -190,7 +216,8 @@ console.log('== 1. 桌面:正常 JSON 计划 → 预览可见 + 可保存 ==');
   });
   check('笔记已落库', !!saved && saved.content.includes('凑凑火锅'));
   check('归档到新建的「餐饮品牌」文件夹', !!saved.folder && saved.folder.name.indexOf('餐饮') >= 0);
-  check('标题取自 AI 计划', !!saved.title && saved.title.includes('凑凑火锅'));
+  check('保存的是用户改过的标题(不是 AI 推荐值)', saved.title === '我改过的标题');
+  check('保存的是用户改过的源码正文', saved.content.includes('门店扩张速度快'));
   check('正文带「来源」区块', saved.content.includes('## 来源'));
   // 关闭有 ~340ms 退场动画,等它真的从 DOM 移除
   const closed = await page.waitForFunction(() => !document.getElementById('notes-ai-mask'), null, { timeout: 8000 }).then(() => true).catch(() => false);

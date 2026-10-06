@@ -9,16 +9,16 @@
 <meta name="robots" content="noindex,nofollow">
 <link rel="icon" type="image/svg+xml" href="./logo-icon.svg">
 <link rel="apple-touch-icon" href="./static/logo/app-icon-192.png">
-<link rel="stylesheet" href="./static/css/style.min.css?v=2.0.139">
-<link rel="stylesheet" href="./vendor/highlight/github.min.css?v=2.0.139" id="hljs-theme">
-<link rel="stylesheet" href="./vendor/katex/katex.min.css?v=2.0.139">
-<link rel="stylesheet" href="./static/css/enhanced.min.css?v=2.0.139">
-<link rel="stylesheet" href="./static/css/refine.min.css?v=2.0.139">
-<link rel="stylesheet" href="./static/css/redesign.min.css?v=2.0.139">
-<link rel="stylesheet" href="./static/css/polish.min.css?v=2.0.139">
-<link rel="stylesheet" href="./static/css/markdown.min.css?v=2.0.139">
-<link rel="stylesheet" href="./static/css/chrome.min.css?v=2.0.139">
-<script src="./static/js/theme-boot.min.js?v=2.0.139"></script>
+<link rel="stylesheet" href="./static/css/style.min.css?v=2.0.141">
+<link rel="stylesheet" href="./vendor/highlight/github.min.css?v=2.0.141" id="hljs-theme">
+<link rel="stylesheet" href="./vendor/katex/katex.min.css?v=2.0.141">
+<link rel="stylesheet" href="./static/css/enhanced.min.css?v=2.0.141">
+<link rel="stylesheet" href="./static/css/refine.min.css?v=2.0.141">
+<link rel="stylesheet" href="./static/css/redesign.min.css?v=2.0.141">
+<link rel="stylesheet" href="./static/css/polish.min.css?v=2.0.141">
+<link rel="stylesheet" href="./static/css/markdown.min.css?v=2.0.141">
+<link rel="stylesheet" href="./static/css/chrome.min.css?v=2.0.141">
+<script src="./static/js/theme-boot.min.js?v=2.0.141"></script>
 </head>
 <body class="admin-body">
 <form id="admin-fields" autocomplete="off" style="display:contents">
@@ -38,9 +38,9 @@
   <div class="admin-tabs" id="admin-tabs" role="tablist">
     <div class="admin-group-tabs" role="tablist" aria-label="后台功能分组">
       <button class="admin-group-tab active" type="button" data-group="overview">概览</button>
-      <button class="admin-group-tab" type="button" data-group="extensions">拓展功能</button>
       <button class="admin-group-tab" type="button" data-group="platform">平台配置</button>
       <button class="admin-group-tab" type="button" data-group="users">用户与权限</button>
+      <button class="admin-group-tab" type="button" data-group="extensions">拓展功能</button>
       <button class="admin-group-tab" type="button" data-group="billing">计费与额度</button>
       <button class="admin-group-tab" type="button" data-group="content">内容</button>
     </div>
@@ -297,7 +297,7 @@
       <button class="btn primary" id="notes-settings-save" type="button">保存笔记设置</button>
     </div>
 
-    <div class="admin-card" style="margin-top:16px">
+    <div class="admin-card" style="margin-top:16px" id="notes-users-card">
       <div class="notes-users-head" id="notes-users-toggle" role="button" tabindex="0" aria-expanded="false">
         <span class="nuh-title"><h2>使用笔记的用户</h2><span class="muted small" id="notes-overview"></span></span>
         <span class="nuh-chevron" aria-hidden="true">›</span>
@@ -365,7 +365,7 @@
       <button class="btn primary" id="im-settings-save" type="button">保存聊天设置</button>
     </div>
 
-    <div class="admin-card" style="margin-top:16px">
+    <div class="admin-card" style="margin-top:16px" id="im-threads-card">
       <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
         <h2 style="margin:0">会话与留档</h2>
         <button class="btn small" id="im-threads-refresh" type="button">刷新列表</button>
@@ -1194,17 +1194,17 @@
   </div>
 </div>
 </form>
-<script defer src="./static/js/config.min.js?v=2.0.139"></script>
-<script defer src="./static/js/icons.min.js?v=2.0.139"></script>
-<script defer src="./vendor/markdown-it/markdown-it.min.js?v=2.0.139"></script>
-<script defer src="./vendor/markdown-it/markdown-it-footnote.min.js?v=2.0.139"></script>
-<script defer src="./vendor/markdown-it/markdown-it-emoji.min.js?v=2.0.139"></script>
-<script defer src="./vendor/dompurify/purify.min.js?v=2.0.139"></script>
-<script defer src="./vendor/katex/katex.min.js?v=2.0.139"></script>
-<script defer src="./vendor/highlight/highlight.min.js?v=2.0.139"></script>
-<script defer src="./static/js/ui.min.js?v=2.0.139"></script>
-<script defer src="./static/js/components.min.js?v=2.0.139"></script>
-<script defer src="./static/js/renderer.min.js?v=2.0.139"></script>
-<script defer src="./static/js/admin.min.js?v=2.0.139"></script>
+<script defer src="./static/js/config.min.js?v=2.0.141"></script>
+<script defer src="./static/js/icons.min.js?v=2.0.141"></script>
+<script defer src="./vendor/markdown-it/markdown-it.min.js?v=2.0.141"></script>
+<script defer src="./vendor/markdown-it/markdown-it-footnote.min.js?v=2.0.141"></script>
+<script defer src="./vendor/markdown-it/markdown-it-emoji.min.js?v=2.0.141"></script>
+<script defer src="./vendor/dompurify/purify.min.js?v=2.0.141"></script>
+<script defer src="./vendor/katex/katex.min.js?v=2.0.141"></script>
+<script defer src="./vendor/highlight/highlight.min.js?v=2.0.141"></script>
+<script defer src="./static/js/ui.min.js?v=2.0.141"></script>
+<script defer src="./static/js/components.min.js?v=2.0.141"></script>
+<script defer src="./static/js/renderer.min.js?v=2.0.141"></script>
+<script defer src="./static/js/admin.min.js?v=2.0.141"></script>
 </body>
 </html>

@@ -1376,6 +1376,9 @@
   color: var(--text-secondary);
   margin-top: 12px;
 }
+/* 标签是 flex 容器里的匿名文本项,会被同一行里「撑满整行」的控件挤到逐字换行
+   (实测「链接有效期」竖成两行)。固定标签不换行,控件按内容宽度收窄。 */
+.ns-expire-label { flex: 0 0 auto; white-space: nowrap; }
 .ns-expire select {
   border: none;
   background: var(--bg-code);
@@ -1386,6 +1389,13 @@
   border-radius: 9px;
   outline: none;
   cursor: pointer;
+}
+/* enhanceSelects 会把 select 换成 .select-box,而 .select-box 基础样式是 width:100%,
+   在「一行两列」的这里就成了横贯整行的长条。改为按内容收窄(与其它行内下拉一致)。 */
+.ns-expire .select-box {
+  width: auto;
+  min-width: 112px;
+  flex: 0 0 auto;
 }
 
 
