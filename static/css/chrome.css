@@ -76,6 +76,14 @@
   /* 给首屏内容让出汉堡的落点,避免和空状态/首条消息重叠 */
   .messages { padding-top: 52px; }
   .empty-state { padding-top: max(8vh, 64px); padding-bottom: 24px; }
+  /* 游客条也悬浮在顶部,原来水平居中会正好压在汉堡上(汉堡 z-index 80 < 300),
+     未登录的移动端用户点不到汉堡 → 打不开侧栏。这里让游客条靠右让位,并给汉堡留宽度。 */
+  .guest-bar {
+    left: auto;
+    right: 10px;
+    transform: none;
+    max-width: calc(100vw - 60px);
+  }
 }
 
 /* 侧边栏折叠后的展开钮:贴主区左上,不再为顶栏让位 */

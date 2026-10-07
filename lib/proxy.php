@@ -2969,6 +2969,7 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
     else $ct = 'application/json';
     http_response_code($res['status'] ?: 200);
     header('Content-Type: ' . $ct);
+    header('X-Content-Type-Options: nosniff');
     header('Cache-Control: no-store');
     header('X-Oc-Cost: ' . $charged);
     header('X-Oc-Quota: ' . $quota);
@@ -3499,6 +3500,32 @@ function tc_img_cache_gc($dir, $limitBytes = 314572800) {
     }
 }
 
+// ---- 代理媒体的统一输出策略 ----
+// 生图/生视频代理会把「上游返回的任意字节」以本站同源地址再次输出。若原样透传上游的
+// Content-Type,一个 image/svg+xml(或视频路径上的 text/html)就能在本站源内内联渲染并
+// 执行脚本、读走 localStorage 里的令牌 —— 等于把存储型 XSS 的入口交给上游配置。
+// 与笔记/IM 附件的输出策略(lib/api.php / lib/im.php)同一口径:类型收紧到本族、
+// SVG 用 CSP sandbox 断脚本、统一加 nosniff。
+function tc_proxy_media_ctype($ctype, $families, $fallback) {
+    $ctype = strtolower(trim(explode(';', (string) $ctype)[0]));
+    // 只认「type/subtype」这一种形状。上游若回 'image/svg+xml, text/html' 这类拼接串,
+    // 前缀判断会放它过关,而 tc_proxy_media_headers 里按等值加的 SVG sandbox 又落不到,
+    // 等于给 SVG 留了个免检口子;带换行的值还能顺手做响应头注入。
+    if (!preg_match('#\A[a-z0-9][a-z0-9.+-]*/[a-z0-9][a-z0-9.+-]*\z#', $ctype)) return $fallback;
+    foreach ((array) $families as $f) {
+        if (strpos($ctype, $f . '/') === 0) return $ctype;
+    }
+    return $fallback;
+}
+function tc_proxy_media_headers($ctype, $cache) {
+    header('Content-Type: ' . $ctype);
+    header('X-Content-Type-Options: nosniff');
+    if ($ctype === 'image/svg+xml') {
+        header("Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; img-src data:; sandbox");
+    }
+    header('Cache-Control: ' . $cache);
+}
+
 // 输出缓存文件(带长缓存头)
 function tc_img_serve_cached($file) {
     $raw = @file_get_contents($file);
@@ -3506,10 +3533,11 @@ function tc_img_serve_cached($file) {
     $len = ord($raw[0]);
     $ctype = substr($raw, 1, $len);
     $body = substr($raw, 1 + $len);
-    if ($ctype === '' || strpos($ctype, 'image/') !== 0) $ctype = 'image/png';
-    header('Content-Type: ' . $ctype);
+    // 缓存文件里的类型是历史写入的,同样要过一遍收紧(且必须是规范形状),
+    // 否则老缓存里一条畸形类型就能绕过上面那套判等加 CSP 的逻辑。
+    $ctype = tc_proxy_media_ctype($ctype, array('image'), 'image/png');
+    tc_proxy_media_headers($ctype, 'public, max-age=86400');
     header('Content-Length: ' . strlen($body));
-    header('Cache-Control: public, max-age=86400');
     echo $body;
     return true;
 }
@@ -3540,10 +3568,9 @@ function tc_img_store_serve($id) {
     $len = ord($raw[0]);
     $ctype = substr($raw, 1, $len);
     $body = substr($raw, 1 + $len);
-    if ($ctype === '' || strpos($ctype, 'image/') !== 0) $ctype = 'image/png';
-    header('Content-Type: ' . $ctype);
+    $ctype = tc_proxy_media_ctype($ctype, array('image'), 'image/png');
+    tc_proxy_media_headers($ctype, 'public, max-age=31536000, immutable');
     header('Content-Length: ' . strlen($body));
-    header('Cache-Control: public, max-age=31536000, immutable');
     echo $body;
     return true;
 }
@@ -3718,6 +3745,11 @@ function tc_api_image_proxy() {
     // 拉取图片,限制体积(25MB)与超时;跟随少量重定向
     $max = 25 * 1024 * 1024;
     $ch = curl_init($url);
+    // DNS rebinding:上面校验时解析过一次 DNS,curl 真正连接时会再解析一次。
+    // 攻击者让域名两次解析结果不同(公网→内网)就能穿过校验。这里把第一次的解析结果
+    // pin 进 CURLOPT_RESOLVE,与 tc_img_store_save / 网页代理同一套防重绑定口径。
+    $pin = tc_public_resolve_pin($url);
+    if ($pin) curl_setopt($ch, CURLOPT_RESOLVE, array($pin['host'] . ':' . $pin['port'] . ':' . $pin['ip']));
     curl_setopt_array($ch, array(
         CURLOPT_RETURNTRANSFER => false,
         CURLOPT_FOLLOWLOCATION => true,
@@ -3758,12 +3790,12 @@ function tc_api_image_proxy() {
         header('Location: ' . $url, true, 302);
         exit;
     }
-    $ctype = strtolower(trim(explode(';', $ctype)[0]));
-    if (strpos($ctype, 'image/') !== 0) $ctype = 'image/png';
+    // 首次拉取与命中缓存必须走同一套输出策略:上游给 image/svg+xml 时首次响应也要套
+    // CSP sandbox,只把 tc_img_serve_cached 改安全的话,第一次那份仍是可执行的。
+    $ctype = tc_proxy_media_ctype($ctype, array('image'), 'image/png');
     tc_img_cache_store($url, $buf, $ctype);
-    header('Content-Type: ' . $ctype);
+    tc_proxy_media_headers($ctype, 'public, max-age=86400');
     header('Content-Length: ' . strlen($buf));
-    header('Cache-Control: public, max-age=86400');
     echo $buf;
     exit;
 }
@@ -4234,6 +4266,9 @@ function tc_api_video_proxy() {
     $hdrs = array('User-Agent: TinyChat-VideoProxy/1.0');
     if ($range !== '') $hdrs[] = 'Range: ' . $range;
     $ch = curl_init($url);
+    // 与图片代理同一套防 DNS rebinding 口径:校验时的解析结果 pin 进 CURLOPT_RESOLVE
+    $pin = tc_public_resolve_pin($url);
+    if ($pin) curl_setopt($ch, CURLOPT_RESOLVE, array($pin['host'] . ':' . $pin['port'] . ':' . $pin['ip']));
     curl_setopt_array($ch, array(
         CURLOPT_HTTPHEADER => $hdrs,
         CURLOPT_RETURNTRANSFER => false,
@@ -4266,11 +4301,14 @@ function tc_api_video_proxy() {
             }
             if ($code >= 400) { http_response_code($code); $sent = true; return strlen($data); }
             http_response_code($code === 206 ? 206 : 200);
-            header('Content-Type: ' . (isset($up['content-type']) ? $up['content-type'] : 'video/mp4'));
+            // 上游的 Content-Type 原样透传的话,text/html 会被本站同源内联渲染。
+            // 收紧到视频/音频两族,其余一律按 video/mp4 输出(浏览器解析不了,只会显示破图)。
+            tc_proxy_media_headers(tc_proxy_media_ctype(
+                isset($up['content-type']) ? $up['content-type'] : 'video/mp4',
+                array('video', 'audio'), 'video/mp4'), 'public, max-age=3600');
             header('Accept-Ranges: bytes');
             if (isset($up['content-length'])) header('Content-Length: ' . $up['content-length']);
             if (isset($up['content-range'])) header('Content-Range: ' . $up['content-range']);
-            header('Cache-Control: public, max-age=3600');
             $sent = true;
         }
         echo $data;

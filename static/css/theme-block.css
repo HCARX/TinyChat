@@ -362,10 +362,12 @@ html[data-oc-theme="block"] .msg.assistant code {
 
 /* ---------- 7. 表格:去掉行线,做成内嵌圆角块 ---------- */
 /* markdown.css 给表格写满了 !important(底色、行线),这里必须同样带 !important,
-   靠属性前缀赢同权重。 */
+   靠属性前缀赢同权重。overflow-x 必须保留成 auto:写成 hidden 会覆盖掉 markdown.css
+   给 .table-wrap 的横向滚动能力,宽表直接被裁掉右半边且无法滚到。 */
 html[data-oc-theme="block"] .msg.assistant .md-prose .table-wrap {
   border-radius: 14px;
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
 }
 html[data-oc-theme="block"] .msg.assistant .md-prose .table-wrap table { font-size: 1em !important; }
 html[data-oc-theme="block"] .msg.assistant .md-prose .table-wrap table th,

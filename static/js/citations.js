@@ -56,6 +56,13 @@
    * @param {HTMLElement} msgEl 消息节点
    * @param {Array} citations
    */
+  // 引用地址来自上游搜索结果,属于第三方数据。escapeHtml 挡得住属性逃逸,
+  // 挡不住 javascript: 协议 —— 这里只放行 http(s) 与站内相对地址,其余不生成链接。
+  function safeUrl(v) {
+    const s = String(v || '').trim();
+    return /^(https?:\/\/|\/)/i.test(s) ? s : '';
+  }
+
   C.renderSources = function (msgEl, citations) {
     if (!msgEl || !citations || !citations.length) return;
     const wrap = document.createElement('div');
@@ -67,10 +74,14 @@
     citations.forEach((cite, i) => {
       const row = document.createElement('a');
       row.className = 'cite-source';
-      if (cite.url) {
-        row.href = cite.url;
+      const href = safeUrl(cite && cite.url);
+      if (href) {
+        row.href = href;
         row.target = '_blank';
         row.rel = 'noopener noreferrer';
+      } else {
+        // 无可用地址:降级为不可点的文本行,避免把可疑值挂上 href
+        row.className = 'cite-source cite-source-static';
       }
       row.innerHTML = '<span class="cite-num">' + (i + 1) + '</span><span class="cite-text">' + escapeHtml(cite.title || cite.url || '来源') + '</span>';
       wrap.appendChild(row);

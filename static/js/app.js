@@ -377,6 +377,13 @@ function toast(msg, isError = false) {
   setTimeout(() => t.remove(), 2600);
 }
 
+// 只放行 http(s) 与站内相对地址:escapeHtml 挡得住属性逃逸,挡不住 javascript: 协议。
+// 用于一切「服务端/第三方给来的 URL 挂到 href/src」的场景(引用来源、套餐跳转、附件地址)。
+function safeUrl(v) {
+  const s = String(v == null ? '' : v).trim();
+  return /^(https?:\/\/|\/)/i.test(s) ? s : '';
+}
+
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
@@ -1033,18 +1040,25 @@ function renderChatList() {
     },
     onRename: (c, item) => {
       window.OCConversations.renameInline(item, c.title, (title) => {
-        c.title = title;
+        // 云端合并会整体替换 state.chats(每个对话都是新对象),列表渲染那一刻捕获的 c
+        // 可能已经不在列表里 —— 直接写 c 就是写进孤儿对象,renderChatList 一刷新,
+        // 用户刚改的标题就无声消失。这里按 id 重新解析到「活对象」再写(与生成路径同一约定)。
+        const live = liveChat(c);
+        if (!live) return;
+        live.title = title;
         // 手动重命名后不再是「自动标题」,AI 命名完成时不得覆盖
-        c._autoTitled = false;
-        c.updatedAt = Date.now();
+        live._autoTitled = false;
+        live.updatedAt = Date.now();
         saveChats(); renderChatList();
       });
     },
     onTogglePin: (c) => {
-      c.pinned = !c.pinned;
-      c.updatedAt = Date.now();
+      const live = liveChat(c);
+      if (!live) return;
+      live.pinned = !live.pinned;
+      live.updatedAt = Date.now();
       saveChats(); renderChatList();
-      toast(c.pinned ? '已置顶「' + (c.title || '新对话') + '」' : '已取消置顶');
+      toast(live.pinned ? '已置顶「' + (live.title || '新对话') + '」' : '已取消置顶');
     },
     onShare: (c) => shareConversation(c),
     onBranch: (c) => {
@@ -2785,12 +2799,15 @@ async function sendMessage() {
 
   // 群聊模式:交给群聊管线(多成员按对话模式顺序发言),不走单模型/生图/视频意图
   if (window.OCGroup && window.OCGroup.isGroupMode()) {
+    // 先让管线确认能开跑(回合进行中会被拒),再清空输入框;
+    // 反过来的话,正在生成时按 Enter 的用户会既没发出消息又丢了刚打的字。
+    const accepted = await window.OCGroup.sendGroupTurn(text, attachments);
+    if (!accepted) return;
     input.value = '';
     autosizeInput();
     state.pendingAttachments = [];
     renderAttachments();
     updateSendBtn();
-    await window.OCGroup.sendGroupTurn(text, attachments);
     await refreshMe();
     refreshModelHealth();
     return;
@@ -2869,7 +2886,14 @@ async function sendMessage() {
       posted = postUserTurn(text, attachments);
       setReplyPhase(posted.assistantMsg, judgePhaseText({ image: aim === 'auto' && hasImageModel, search: searchReady, title: isFirstMsg }));
       state.streaming = true; updateSendBtn();
+      // 判定阶段也要给出「停止」:它最长可挂 12 秒,原来这里只把 streaming 置真,
+      // 停止按钮不出现、发送按钮仍是可用态(点了只弹「正在生成中」),用户只能干等。
+      // 判定用的 AbortController 挂到 state.abortController 上,停止按钮就能掐掉它;
+      // 其余善后(令牌递增/按钮复位)走 stopStreaming 原有逻辑,finally 里再兜底复位一次。
+      $('send-btn').classList.add('hidden');
+      $('stop-btn').classList.remove('hidden');
       const judgeAc = new AbortController();
+      state.abortController = judgeAc;
       const judgeTimer = setTimeout(() => judgeAc.abort(), 12000);
       // 判定期间用户可能切换会话(或点了停止)。判题用的是局部 AbortController,
       // 不在 state.abortController 上,stopStreaming 掐不到它;若不管,
@@ -2881,7 +2905,12 @@ async function sendMessage() {
         verdict = await aiJudgeTools(text, { imageEnabled: hasImageModel, searchEnabled: searchReady, prevImage: hasRef, wantTitle: isFirstMsg, signal: judgeAc.signal });
       } finally {
         clearTimeout(judgeTimer);
+        state.abortController = null;
         state.streaming = false; updateSendBtn();
+        // 恢复按钮:判定结束(正常/超时/被停止)都要回到「可发送」态。
+        // stopStreaming 已经做过一次,这里兜底覆盖「自然结束」这条路径。
+        $('stop-btn').classList.add('hidden');
+        $('send-btn').classList.remove('hidden');
       }
       const stillHere = judgeChatId && state.currentChatId === judgeChatId;
       if (!stillHere || turnCancelled(judgeTurnId)) {
@@ -3983,7 +4012,12 @@ async function loadAccountPackages() {
           action = '<button class="btn small primary plan-tile-btn" data-claim="' + escapeHtml(p.id) + '">立即领取</button>';
         }
       } else if (p.purchaseUrl) {
-        action = '<a class="btn small primary plan-tile-btn" href="' + escapeHtml(p.purchaseUrl) + '" target="_blank" rel="noopener">前往购买</a>';
+        // 套餐跳转地址由后台填写(服务端已限 http/https),这里再挡一道历史数据/导入数据
+        // 里的可疑协议:escapeHtml 挡得住属性逃逸,挡不住 javascript: 协议本身。
+        const buy = safeUrl(p.purchaseUrl);
+        action = buy
+          ? '<a class="btn small primary plan-tile-btn" href="' + escapeHtml(buy) + '" target="_blank" rel="noopener noreferrer">前往购买</a>'
+          : '<button class="btn small plan-tile-btn" disabled>请用兑换码兑换</button>';
       } else {
         action = '<button class="btn small plan-tile-btn" disabled>请用兑换码兑换</button>';
       }
@@ -6635,9 +6669,19 @@ async function attachDocument(file, attach) {
 // 上传按钮、粘贴、拖拽三条入口共用这一条路径,行为保持一致。
 async function ingestOneFile(file) {
   if (!file) return false;
+  // 解析(PDF/图片 OCR)可能要几十秒。收进来的那一刻记下「是哪个输入框的队列」:
+  // 期间用户切到别的对话会整体重置 pendingAttachments(换成新数组),解析完若还按
+  // 引用 push,附件就会凭空出现在另一条对话的输入区里 —— 用户莫名其妙就把
+  // 上一个对话的 PDF 发了出去。队列已被换掉就不再入列,并明确告知。
+  const queue = state.pendingAttachments;
+  const chatId = state.currentChatId;
   const attach = await window.OCMultimodal.readFile(file);
   const ready = await attachDocument(file, attach);
   if (!ready) return false;
+  if (state.pendingAttachments !== queue || state.currentChatId !== chatId) {
+    toast('「' + (file.name || '附件') + '」已解析完成，但你已切换对话，未自动加入输入区', true);
+    return false;
+  }
   if (state.pendingAttachments.indexOf(ready) < 0) state.pendingAttachments.push(ready);
   renderAttachments();
   updateSendBtn();

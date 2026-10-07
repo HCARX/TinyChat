@@ -6,7 +6,7 @@ if (!defined('TC_ROOT')) {
     define('TC_ROOT', dirname(__DIR__));
 }
 
-define('TC_VERSION', '2.0.141');
+define('TC_VERSION', '2.0.142');
 // 单篇笔记正文上限(字符)。超出时接口明确报错而不是静默截断。
 define('TC_NOTE_MAX_CHARS', 500000);
 define('TC_DB_VERSION', 2);
@@ -2885,10 +2885,12 @@ function tc_agreement_sanitize_node($node) {
 }
 
 function tc_agreement_url_ok($name, $val) {
-    $v = trim((string) $val);
+    // 浏览器解析 URL 前会剥掉制表符/换行等控制字符,「jav&#x09;ascript:」在 DOM 里
+    // 就还原成 javascript:。判断协议前缀前先把空白与控制字符整体去掉,别让它们漏网。
+    $v = preg_replace('/[\x00-\x20\x7f]/', '', (string) $val);
     if (!preg_match('/^(javascript|vbscript|data):/i', $v)) return true;
     if (($name === 'src' || $name === 'xlink:href')
-        && preg_match('#^data:image/(png|jpe?g|gif|webp|avif|bmp);base64,[a-z0-9+/=\s]+$#i', $v)) {
+        && preg_match('#^data:image/(png|jpe?g|gif|webp|avif|bmp);base64,[a-z0-9+/=]+$#i', $v)) {
         return true;
     }
     return false;

@@ -1,7 +1,7 @@
 'use strict';
 /**
  * 自定义下拉组件（替代原生 <select>）
- * - 菜单用 position:fixed 挂在 body 顶层（z-index 9999），不会被容器裁剪或遮挡
+ * - 菜单用 position:fixed 挂在 body 顶层（.oc-menu，z-index 1700，见 style.css 的层级阶梯），不会被容器裁剪或遮挡
  * - 自动翻转：下方空间不足时向上展开
  * - 支持搜索过滤、分组标题、选中勾选态
  * - 点击外部 / Esc 关闭

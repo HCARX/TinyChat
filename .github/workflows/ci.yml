@@ -70,6 +70,10 @@ jobs:
         run: node tests/modal-close.js
       - name: 设置云同步合并自检(逐键时间戳 / 删除墓碑 / 快照往返)
         run: node tests/settings-merge.js
+      - name: 安全修复源码契约自检(协议白名单 / postMessage 来源 / 媒体输出加固 / 反原型污染)
+        # 这一轮安全审计修的多是「少写一个词、功能照常、只是不再安全」的问题:漏改一条出图
+        # 路径就等于没改,漏一次来源判断就能被任意站点驱动。读 diff 看不出来,钉成契约挡回归。
+        run: node tests/security-contracts.js
       - name: 用户设置云同步自检(白名单收敛 / 分片落库 / 注销清理)
         run: php tests/settings-sync.php
       - name: 内置模型元数据自检(注入 / 不覆盖手工与同步 / 同步跳过内置)
@@ -84,7 +88,7 @@ jobs:
         run: php tests/upstream-url.php
       - name: 署名完整性守卫自检(篡改拦截 / 合法放行)
         run: php tests/attribution.php
-      - name: 生图图片代理自检(签名 / SSRF 防护)
+      - name: 生图图片代理自检(签名 / SSRF 防护 / 媒体类型收紧 / 协议白名单)
         run: php tests/image-proxy.php
       - name: 对话式生图/改图自检(抽图 / 参考图 / 兜底识别)
         run: php tests/image-chat.php

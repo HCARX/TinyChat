@@ -29,6 +29,12 @@
   function esc(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   }
+  // 附件地址来自服务端响应。esc 挡得住属性逃逸,挡不住 javascript: 协议,
+  // 这里只放行 http(s) 与站内相对地址,其余降级为不可点。
+  function safeUrl(v) {
+    const s = String(v == null ? '' : v).trim();
+    return /^(https?:\/\/|\/)/i.test(s) ? s : '';
+  }
   function icon(name, size) {
     return (window.OC && window.OC.icon) ? window.OC.icon(name, size || 15) : '';
   }
@@ -370,7 +376,7 @@
     }
     if (r.messages && r.messages.length) {
       const t = S.threads.find((x) => x.id === tid);
-      if (t) { t.unread = 0; renderThreadList(); }
+      if (t) { t.unread = 0; renderThreadList(); renderEntryBadge(); }
       renderMessages(tid, full ? 0 : r.messages.length);
       if (r.messages.some((x) => x.kind === 'ai')) S.aiPending.delete(tid);
     } else if (full) {
@@ -409,6 +415,7 @@
       renderSide();
       renderChat();
       renderThreadList();
+      renderEntryBadge();   // 已读当下就把入口上的未读数清掉,别等下一次轮询(最长 25s)
       if (!opts || !opts.silent) S.els.pane.querySelector('#im-input') && S.els.pane.querySelector('#im-input').focus();
     } catch (e) { toast(e.message || '打开会话失败', true); }
   }
@@ -1290,10 +1297,11 @@
 
   function renderFilePart(f) {
     if (!f) return '';
-    if (f.image && f.url) {
-      return '<img class="im-img" src="' + esc(f.url) + '" alt="' + esc(f.name) + '" loading="lazy" data-href="' + esc(f.url) + '">';
+    const url = safeUrl(f.url);
+    if (f.image && url) {
+      return '<img class="im-img" src="' + esc(url) + '" alt="' + esc(f.name) + '" loading="lazy" data-href="' + esc(url) + '">';
     }
-    return '<a class="im-file" href="' + esc(f.url || '#') + '" download>'
+    return '<a class="im-file" href="' + esc(url || '#') + '" download>'
       + '<span class="im-file-icon">' + icon('file', 16) + '</span>'
       + '<span class="im-file-main"><span class="im-file-name">' + esc(f.name) + '</span>'
       + '<span class="im-file-size">' + esc(fmtSize(f.size)) + '</span></span>'
@@ -1320,9 +1328,12 @@
         const m = msgsOf(S.current ? S.current.id : '').list.find((x) => String(x.id) === b.dataset.copy);
         const text = m && m.text ? m.text : '';
         if (!text) return;
-        if (window.OCUI && window.OCUI.copyText) window.OCUI.copyText(text);
-        else if (navigator.clipboard) navigator.clipboard.writeText(text).then(() => toast('已复制'));
-        else toast('已复制');
+        // 三条路径都要给结果反馈:剪贴板权限被拒时静默失败,用户会以为复制了
+        if (window.OCUI && window.OCUI.copyText) {
+          Promise.resolve(window.OCUI.copyText(text)).then((ok) => toast(ok === false ? '复制失败' : '已复制')).catch(() => toast('复制失败', true));
+        } else if (navigator.clipboard) {
+          navigator.clipboard.writeText(text).then(() => toast('已复制'), () => toast('复制失败', true));
+        } else toast('已复制');
       });
     });
     // 图片:模块内灯箱(点击放大,再点/Esc 关闭),不再跳新标签页

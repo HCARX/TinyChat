@@ -43,6 +43,12 @@
   function esc(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   }
+  // 附件地址来自服务端响应。esc 挡得住属性逃逸,挡不住 javascript: 协议,
+  // 这里只放行 http(s) 与站内相对地址,其余降级为不可点。
+  function safeUrl(v) {
+    const s = String(v == null ? '' : v).trim();
+    return /^(https?:\/\/|\/)/i.test(s) ? s : '';
+  }
   function uid(prefix) {
     return (prefix || 'n') + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
   }
@@ -174,7 +180,14 @@
       const raw = localStorage.getItem(lsUiKey());
       if (!raw) return;
       const j = JSON.parse(raw);
-      if (j && typeof j === 'object') Object.assign(N.ui, j);
+      // 只拷贝自有键:JSON.parse 出来的 "__proto__" 是自有属性,Object.assign 会经
+      // [[Set]] 触发 N.ui 的原型 setter,把整个 UI 状态对象的原型换掉。
+      if (j && typeof j === 'object') {
+        for (const k of Object.keys(j)) {
+          if (k === '__proto__' || k === 'constructor' || k === 'prototype') continue;
+          N.ui[k] = j[k];
+        }
+      }
     } catch (e) {}
     if (MODES.indexOf(N.ui.mode) < 0) N.ui.mode = 'split';
   }
@@ -2713,7 +2726,7 @@
     const box = document.createElement('div');
     box.className = 'notes-attach-cards';
     box.innerHTML = '<div class="nac-head">附件（' + files.length + '）</div>' + files.map((a) => ''
-      + '<a class="nac-item" href="' + esc(a.url) + '" target="_blank" rel="noopener" download>'
+      + '<a class="nac-item" href="' + esc(safeUrl(a.url) || '#') + '" target="_blank" rel="noopener noreferrer" download>'
       + '<span class="nac-icon">' + icon('file', 15) + '</span>'
       + '<span class="nac-main"><b>' + esc(a.name || 'file') + '</b><i>' + fmtBytes(a.size) + '</i></span>'
       + '<span class="nac-dl">' + icon('download', 14) + '</span>'

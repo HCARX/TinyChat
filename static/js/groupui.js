@@ -228,7 +228,16 @@
     if (!group.createdAt) group.createdAt = Date.now();
     upgradeStarterRoster(group);
     if (!group.settings) group.settings = Object.assign({}, DEFAULT_SETTINGS);
-    else group.settings = Object.assign({}, DEFAULT_SETTINGS, group.settings);
+    else {
+      // 逐自有键拷贝并跳过 __proto__:group.settings 来自 localStorage,JSON.parse 出来的
+      // "__proto__" 是自有属性,Object.assign 会经 [[Set]] 换掉 settings 的原型。
+      const merged = Object.assign({}, DEFAULT_SETTINGS);
+      for (const k of Object.keys(group.settings)) {
+        if (k === '__proto__' || k === 'constructor' || k === 'prototype') continue;
+        merged[k] = group.settings[k];
+      }
+      group.settings = merged;
+    }
     const cap = Math.min(MAX_MEMBERS, Math.max(MIN_MEMBERS, Number(group.settings.maxMembers) || MAX_MEMBERS));
     group.settings.maxMembers = cap;
     group.settings.maxRounds = Math.min(4, Math.max(1, Number(group.settings.maxRounds) || 2));
@@ -439,9 +448,19 @@
 
   // ---------- 发送一轮群聊 ----------
   G.sendGroupTurn = async function (text, attachments) {
-    if (state.streaming) { toast('正在生成中，请稍候', true); return; }
+    // 群聊一轮是「多个成员串行请求」的循环,循环间隙 state.streaming 会被
+    // requestAssistantReply 的 finally 复位 —— 只看 streaming 的话,成员正在讨论时
+    // 用户再按 Enter 就会并行起第二个回合:两个回合往同一段对话里穿插发言,
+    // 且第二个回合 beginTurn() 递增令牌会把第一个回合整体静默掐死(没有提示)。
+    // _groupTurnActive 只在整回合结束才复位,必须一起守。
+    // 返回 true/false:调用方据此决定要不要清空输入框,被拒时用户的草稿不能丢。
+    if (state.streaming || state._groupTurnActive) {
+      toast(state._groupTurnActive ? '群聊回合进行中，请等成员们说完' : '正在生成中，请稍候', true);
+      return false;
+    }
     try {
       await G.sendGroupTurnInner(text, attachments);
+      return true;
     } finally {
       state._groupTurnActive = false;
     }

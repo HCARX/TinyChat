@@ -257,7 +257,22 @@ const resetForm = $('reset-form');
 const showForgot = $('show-forgot');
 if (showForgot) showForgot.addEventListener('click', (e) => { e.preventDefault(); $('login-form').classList.add('hidden'); $('register-form').classList.add('hidden'); forgotForm.classList.remove('hidden'); clearError(); });
 if ($('forgot-back')) $('forgot-back').addEventListener('click', (e) => { e.preventDefault(); forgotForm.classList.add('hidden'); $('login-form').classList.remove('hidden'); });
-if (forgotForm) forgotForm.addEventListener('submit', async (e) => { e.preventDefault(); const r=await fetch(apiUrl('/api/auth/forgot-password'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:$('forgot-email').value.trim()})}); const d=await r.json(); if(!r.ok)return showError((d.error&&d.error.message)||'发送失败'); showError('如果邮箱存在，重置链接已发送。'); });
+if (forgotForm) forgotForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  // 发信慢的时候连点会重复发多封重置邮件:按钮要锁住,失败/成功都要解锁
+  const btn = $('forgot-btn');
+  setBusy(btn, true, '发送中');
+  try {
+    const r = await fetch(apiUrl('/api/auth/forgot-password'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: $('forgot-email').value.trim() }) });
+    const d = await r.json();
+    if (!r.ok) return showError((d.error && d.error.message) || '发送失败');
+    showError('如果邮箱存在，重置链接已发送。');
+  } catch (er) {
+    showError('发送失败，请检查网络后重试');
+  } finally {
+    setBusy(btn, false, '发送重置邮件');
+  }
+});
 if (resetToken) { $('login-form').classList.add('hidden'); $('register-form').classList.add('hidden'); resetForm.classList.remove('hidden'); }
 if ($('reset-back')) $('reset-back').addEventListener('click', (e) => { e.preventDefault(); resetForm.classList.add('hidden'); $('login-form').classList.remove('hidden'); });
 if (resetForm) resetForm.addEventListener('submit', async (e) => { e.preventDefault(); if($('reset-password').value !== $('reset-password2').value)return showError('两次密码不一致'); const r=await fetch(apiUrl('/api/auth/reset-password'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:resetToken,password:$('reset-password').value})}); const d=await r.json(); if(!r.ok)return showError((d.error&&d.error.message)||'重置失败'); showError('密码已重置，请返回登录。'); resetForm.classList.add('hidden'); $('login-form').classList.remove('hidden'); });

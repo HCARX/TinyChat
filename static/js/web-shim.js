@@ -153,7 +153,11 @@
     } catch (e) {}
   }
 
+  // 只认宿主(app)发来的指令:shim 运行在沙箱 iframe 里,能 postMessage 进来的窗口
+  // 不止父级一个(同页面的其它 iframe 也可以)。不校验来源的话,任意同页脚本都能
+  // 让 shim 跳转到别的代理地址、或把代理页正文(最多 40KB)交出去。
   window.addEventListener('message', function (ev) {
+    if (ev.source !== window.parent) return;
     var d = ev && ev.data;
     if (!d || d.__ocwCmd == null) return;
     if (d.__ocwCmd === 'text') {

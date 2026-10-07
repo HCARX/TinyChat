@@ -1180,7 +1180,8 @@
 /* ============================================================
    9. 确认弹窗(UI.confirm)
    ============================================================ */
-.oc-confirm-mask { z-index: 3000; }
+/* 层级不再在这里声明:chrome.css 以 .oc-confirm-mask{3100} 统一管理(高于 toast 3000),
+   这里若再写一份会和 toast 撞值,一旦 chrome.css 调整,确认框就会被 toast 盖住。 */
 .modal-sm { width: min(400px, 92vw); }
 .confirm-message { font-size: 1.036rem; line-height: 1.7; color: var(--text-secondary); }
 .modal-footer {

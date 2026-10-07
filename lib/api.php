@@ -1174,7 +1174,14 @@ function tc_api_login() {
         foreach ($db['users'] as $u) {
             if (strtolower($u['name']) === strtolower($name)) { $found = $u; break; }
         }
-        if (!$found || !tc_verify_password($password, $found)) {
+        if (!$found) {
+            // 用户不存在时也执行一次同代价的口令推导,避免「用户名是否存在」被
+            // 网络耗时区分出来(120000 轮 PBKDF2 与直接短路差几十毫秒)。
+            tc_verify_password($password, array('salt' => 'tc-enumeration-pad', 'passwordHash' => str_repeat('0', 128)));
+            tc_note_login_fail($db['settings'], $name);
+            tc_fail(401, '用户名或密码错误');
+        }
+        if (!tc_verify_password($password, $found)) {
             tc_note_login_fail($db['settings'], $name);
             tc_fail(401, '用户名或密码错误');
         }
@@ -2342,16 +2349,18 @@ function tc_api_admin_storage() {
         foreach ((array) tc_list_logs(TC_LOG_LIMIT) as $l) $logCount++;
         // 已删除对话留档:用户在会话里删除的对话仍保留在云端(软删除),这里给出汇总。
         // 演示管理员只拿匿名汇总(不暴露「哪个用户删了什么」)。
-        $deletedSummary = tc_admin_deleted_summary($db, tc_is_demo_user($admin));
+        $isDemo = tc_is_demo_user($admin);
+        $deletedSummary = tc_admin_deleted_summary($db, $isDemo);
         tc_json(200, array(
             'categories' => $cats,
             'deleted' => $deletedSummary,
             'totalBytes' => $total,
             'disk' => $disk,
-            'dataDir' => $data,
-            'backups' => array('items' => array_slice($backups, 0, 30), 'count' => count($backups),
+            // 演示管理员不下发服务器绝对路径,备份/留存明细也只留计数(文件名无授权含义)
+            'dataDir' => $isDemo ? '' : $data,
+            'backups' => array('items' => $isDemo ? array() : array_slice($backups, 0, 30), 'count' => count($backups),
                                'bytes' => array_sum(array_column($backups, 'bytes'))),
-            'images' => array('items' => array_slice($imgFiles, 0, 30), 'count' => count($imgFiles),
+            'images' => array('items' => $isDemo ? array() : array_slice($imgFiles, 0, 30), 'count' => count($imgFiles),
                               'bytes' => array_sum(array_column($imgFiles, 'bytes'))),
             'logs' => array('count' => $logCount, 'bytes' => (int) (@filesize(tc_logs_file()) ?: 0), 'limit' => TC_LOG_LIMIT),
             'quotaMb' => isset($db['settings']['imageArchiveQuotaMb']) ? (int) $db['settings']['imageArchiveQuotaMb'] : 500,
@@ -2714,7 +2723,10 @@ function tc_api_admin_delete_package($id) {
 
 function tc_api_admin_generate_codes($id) {
     tc_with_db(true, function (&$db) use ($id) {
-        tc_require_admin($db); $b = tc_read_json_body(); $n = min(500, max(1, (int) ($b['count'] ?? 1))); $pkg = null; foreach ($db['packages'] as $p) if ($p['id'] === $id) $pkg = $p; if (!$pkg) tc_fail(404, '套餐不存在');
+        // 兑换码能直接换到额度,而 redemptionCodes 不在演示快照内 —— 演示管理员造的码
+        // 在演示到期还原后依然有效,等于绕过「改动会自动还原」的承诺(与邀请码同口径拒绝)。
+        tc_demo_guard(tc_require_admin($db), '演示管理员不能生成兑换码');
+        $b = tc_read_json_body(); $n = min(500, max(1, (int) ($b['count'] ?? 1))); $pkg = null; foreach ($db['packages'] as $p) if ($p['id'] === $id) $pkg = $p; if (!$pkg) tc_fail(404, '套餐不存在');
         // 明文与哈希同时保存,供之后按套餐导出未使用兑换码
         $plain = array(); for ($i=0; $i<$n; $i++) { $code = strtoupper(bin2hex(random_bytes(8))); $db['redemptionCodes'][] = array('id'=>tc_uid(8),'packageId'=>$id,'type'=>'random','code'=>$code,'codeHash'=>hash('sha256', $code),'status'=>'unused','createdAt'=>tc_now()); $plain[] = $code; }
         tc_json(200, array('codes' => $plain, 'count' => count($plain)));
@@ -2724,7 +2736,9 @@ function tc_api_admin_generate_codes($id) {
 // 添加固定兑换码:自定义码面,可设置总可兑换次数、每次兑换所得可用次数与有效期
 function tc_api_admin_create_fixed_code() {
     tc_with_db(true, function (&$db) {
-        tc_require_admin($db); $b = tc_read_json_body();
+        // 与生成随机兑换码同一口径:演示身份造的码不在快照还原范围内,一律拒绝
+        tc_demo_guard(tc_require_admin($db), '演示管理员不能创建兑换码');
+        $b = tc_read_json_body();
         $code = preg_replace('/[^A-Z0-9]/', '', strtoupper((string) ($b['code'] ?? '')));
         if (strlen($code) < 4 || strlen($code) > 64) tc_fail(400, '兑换码需为 4-64 位字母或数字');
         $hash = hash('sha256', $code);
@@ -5308,7 +5322,8 @@ function tc_settings_prefs($raw) {
     $i = 0;
     foreach ($raw as $k => $v) {
         if (++$i > 120) break;
-        $k = (string) $k;
+        // 键名同样要收口:未知键是给后续版本留的,但 1MB 请求体里的超长键名会原样落库
+        $k = substr((string) $k, 0, 120);
         if (in_array($k, $boolKeys, true)) { $out[$k] = !empty($v); continue; }
         if (isset($enums[$k])) {
             $v = (string) $v;

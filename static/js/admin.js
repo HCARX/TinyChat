@@ -2830,7 +2830,8 @@ async function loadLogs() {
       : (l.kind === 'mail' ? '<span class="log-badge auth">邮件</span>'
       : (l.kind === 'admin' ? '<span class="log-badge auth">管理</span>'
       : (status >= 400 || l.error ? '<span class="log-badge err">错误</span>' : '<span class="log-badge chat">对话</span>'))));
-    const ms = l.ms !== undefined ? '<span title="' + l.ms + 'ms">' + (l.ms >= 1000 ? (l.ms / 1000).toFixed(1) + 's' : l.ms + 'ms') + '</span>' : '-';
+    // l.ms 是服务端数值字段;title 属性里不加转义的话,数值一旦变成字符串就成了属性注入入口
+    const ms = l.ms !== undefined ? '<span title="' + escapeHtml(String(l.ms)) + 'ms">' + (l.ms >= 1000 ? (l.ms / 1000).toFixed(1) + 's' : l.ms + 'ms') + '</span>' : '-';
     // 信息列:失败原因 / 解析摘要(note) / 认证动作(action)
     const infoMsg = l.error || l.note || l.action || '';
     // 完整内容:提示词 / 模型回复 / 用量 / 来源 IP;点小眼睛展开查看

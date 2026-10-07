@@ -169,7 +169,7 @@
 }
 .im-unread {
   min-width: 19px; height: 19px; padding: 0 5px;
-  border-radius: 10px; background: var(--accent); color: #fff;
+  border-radius: 10px; background: var(--accent); color: var(--primary-text);
   font-size: 11px; line-height: 19px; text-align: center;
   font-weight: 700; flex-shrink: 0;
   box-shadow: 0 1px 3px color-mix(in srgb, var(--accent) 45%, transparent);
@@ -222,7 +222,7 @@
   padding: 6px 12px; border-radius: 10px; flex-shrink: 0;
 }
 .im-btn:hover { background: var(--bg-active); }
-.im-btn.primary { background: var(--accent); color: #fff; }
+.im-btn.primary { background: var(--accent); color: var(--primary-text); }
 .im-btn.primary:hover { filter: brightness(1.08); }
 .im-btn.small { padding: 4px 9px; font-size: 12px; border-radius: 8px; }
 .im-btn.block { width: 100%; justify-content: center; box-sizing: border-box; }
@@ -372,7 +372,7 @@
 .im-bubble.other { background: var(--bg-surface); border: 1px solid var(--hairline); color: var(--text); border-bottom-left-radius: 6px; }
 .im-bubble.self {
   background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 90%, #fff), var(--accent));
-  color: #fff; border-bottom-right-radius: 6px;
+  color: var(--primary-text); border-bottom-right-radius: 6px;
 }
 .im-bubble.ai {
   background: var(--bg-surface); border: 1px solid var(--hairline);
@@ -504,7 +504,7 @@
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .im-send-btn {
-  border: none; background: var(--accent); color: #fff;
+  border: none; background: var(--accent); color: var(--primary-text);
   width: 38px; height: 38px; border-radius: 50%;
   display: inline-flex; align-items: center; justify-content: center;
   cursor: pointer; flex-shrink: 0;
@@ -708,7 +708,7 @@
 .im-scroll-count {
   position: absolute; top: -6px; right: -4px;
   min-width: 17px; height: 17px; padding: 0 4px;
-  border-radius: 9px; background: var(--accent); color: #fff;
+  border-radius: 9px; background: var(--accent); color: var(--primary-text);
   font-size: 10.5px; line-height: 17px; text-align: center; font-weight: 700;
 }
 .im-scroll-count.hidden { display: none; }

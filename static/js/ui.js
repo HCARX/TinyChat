@@ -75,7 +75,14 @@
     let raw = null;
     try {
       raw = JSON.parse(localStorage.getItem(PREF_KEY) || '{}');
-      if (raw && typeof raw === 'object') Object.assign(prefs, raw);
+      // 只拷贝自有键并跳过 __proto__/constructor:Object.assign 用 [[Set]] 语义赋值,
+      // 源对象里的 "__proto__" 键会触发目标对象的原型 setter,把整个 prefs 的原型换掉。
+      if (raw && typeof raw === 'object') {
+        for (const k of Object.keys(raw)) {
+          if (k === '__proto__' || k === 'constructor' || k === 'prototype') continue;
+          prefs[k] = raw[k];
+        }
+      }
     } catch (e) { /* 忽略损坏数据 */ }
     if (!localStorage.getItem(PREF_KEY)) {
       // 兼容旧版本单独存储的键
@@ -313,6 +320,10 @@
   UI.openModal = function (el) {
     if (!el) return;
     el.classList.remove('hidden');
+    // 作废还在路上的「落幕」定时器:closeModal 是 320ms 后才加 hidden 的,
+    // 关掉又立刻重开时,那条定时器会把刚打开的弹窗再藏起来 —— 表现为弹窗闪一下就没了,
+    // 用户得再点一次。IM 抽屉曾为此单独打过补丁,这里在入口统一修掉。
+    el._closeSeq = (el._closeSeq || 0) + 1;
     requestAnimationFrame(() => el.classList.add('show'));
     if (modalStack.indexOf(el) === -1) modalStack.push(el);
     document.body.classList.add('modal-open');
@@ -346,7 +357,8 @@
   UI.closeModal = function (el) {
     if (!el) return;
     el.classList.remove('show');
-    setTimeout(() => el.classList.add('hidden'), 320);
+    const seq = (el._closeSeq = (el._closeSeq || 0) + 1);
+    setTimeout(() => { if (el._closeSeq === seq) el.classList.add('hidden'); }, 320);
     const i = modalStack.indexOf(el);
     if (i >= 0) modalStack.splice(i, 1);
     if (!modalStack.length) document.body.classList.remove('modal-open');
@@ -440,8 +452,9 @@
         done(true);
       });
       setTimeout(() => {
-        const okBtn = mask.querySelector('[data-act="ok"]');
-        if (okBtn) okBtn.focus();
+        // 破坏性操作(删除/清空)默认焦点落在「取消」上:键盘用户连按 Enter 不会直接执行删除。
+        const target = mask.querySelector(opts.danger ? '[data-act="cancel"]' : '[data-act="ok"]');
+        if (target) target.focus();
       }, 60);
     });
   };
@@ -480,7 +493,9 @@
       input.addEventListener('keydown', (e) => {
         if (e.isComposing || e.keyCode === 229) return;
         if (e.key === 'Enter') { e.preventDefault(); done(String(input.value).trim()); }
-        if (e.key === 'Escape') { e.preventDefault(); done(null); }
+        // Esc 已经在这里消费掉了,必须截断冒泡:全局 Esc 处理器会接着关掉弹窗栈里的
+        // 下一层,用户按一次 Esc 就把两层都关了。
+        if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); done(null); }
       });
       setTimeout(() => { input.focus(); input.select(); }, 60);
     });
@@ -799,8 +814,17 @@ UI.toggleTheme = function () {
       styleEl.id = 'oc-custom-fonts';
       document.head.appendChild(styleEl);
     }
-    const map = UI.getCustomFonts();
-    styleEl.textContent = Object.values(map).join('\n');
+    // 自定义字体是用户自己贴的 CSS 且会同步到本人其它设备,但它会被注入到应用主文档的
+    // <style> 里 —— CSS 注入在这里是真实的能力(UI 伪装、借助属性选择器探测数据)。
+    // @font-face 只需要 font-family/src/format/unicode-range/字体度量这些声明,
+    // 这里把能带出请求或改变行为的写法整体剥掉,再落到样式表。
+    const css = Object.values(UI.getCustomFonts() || {}).join('\n')
+      .replace(/@import[^;{]*(;|$)/gi, '')
+      .replace(/url\s*\([^)]*\)/gi, '')
+      .replace(/expression\s*\([^)]*\)/gi, '')
+      .replace(/behaviou?r\s*:[^;}]*(;|$)/gi, '')
+      .replace(/javascript\s*:/gi, '');
+    styleEl.textContent = css;
   }
   // 初始化时应用自定义字体
   applyCustomFonts();

@@ -103,7 +103,8 @@
   border-radius: 0 !important;
   overflow-x: auto;
 }
-.msg.assistant .md-prose > pre {
+.msg.assistant .md-prose > pre,
+.msg.user .md-prose > pre {
   background: var(--bg-code);
   border: 1px solid var(--hairline);
   border-radius: 10px;
@@ -284,7 +285,8 @@
 .msg.assistant .md-prose .katex:not(.katex-display .katex) {
   white-space: nowrap;
 }
-.msg.assistant .md-prose .katex-display {
+.msg.assistant .md-prose .katex-display,
+.msg.user .md-prose .katex-display {
   position: relative;
   display: block;
   margin: 1.2em 0;
@@ -354,8 +356,11 @@
   background: color-mix(in srgb, #000 9%, var(--bg-code)) !important;
   border: 0 !important;
 }
+/* 语言名:浅色主题下代码头部是「9% 黑压在 3.5% 黑的底色上」≈ #dcdcdc,
+   原来直接写 #fff 对比度只有 1.4:1,PYTHON / JSON 几乎看不见。
+   浅色改用次级文字色;深色头部压的是 14% 白,白字仍然成立,单独保留。 */
 .msg.assistant .md-prose .code-block .code-lang {
-  color: #fff;
+  color: var(--text-secondary);
   font-weight: 700;
 }
 [data-theme="dark"] .msg.assistant .md-prose .code-block .code-header,
