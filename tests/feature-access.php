@@ -36,15 +36,16 @@ $db = array(
 );
 $U = function ($i) use ($db) { return $db['users'][$i]; };
 
-echo "== 1. 未配置时的默认值(历史语义:notes 默认关,im/web 默认开)==\n";
+echo "== 1. 未配置时的默认值(历史语义:notes 默认关,im/web/toolbox 默认开)==\n";
 // 这不是随便定的:api.php 里 notes 的 guard 用 !empty($s['notesEnabled']),缺字段即关;
-// im/web 用 isset() 判断「显式设成 false 才关」,缺字段即开。这里锁住这个差异,
+// im/web/toolbox 用 isset() 判断「显式设成 false 才关」,缺字段即开。这里锁住这个差异,
 // 免得以后有人为了「统一」把它改成一样,悄悄改变老库的行为。
 $check('notes 未配置时默认关闭', tc_feature_allowed($db, $U(1), 'notes') === false);
 $check('im 未配置时默认开启', tc_feature_allowed($db, $U(1), 'im') === true);
 $check('web 未配置时默认开启', tc_feature_allowed($db, $U(1), 'web') === true);
+$check('toolbox 未配置时默认开启', tc_feature_allowed($db, $U(1), 'toolbox') === true);
 $allOn = $db;
-$allOn['settings'] = array('notesEnabled' => true, 'imEnabled' => true, 'webEnabled' => true);
+$allOn['settings'] = array('notesEnabled' => true, 'imEnabled' => true, 'webEnabled' => true, 'toolboxEnabled' => true);
 foreach (tc_feature_ids() as $f) {
     $check($f . ' 显式开启后放行普通用户', tc_feature_allowed($allOn, $U(1), $f) === true);
     $check($f . ' 显式开启后也放行管理员', tc_feature_allowed($allOn, $U(0), $f) === true);
@@ -149,12 +150,15 @@ $check('非字符串安全回落', tc_feature_access_mode(null) === 'all' && tc_
 
 echo "== 10. tc_features_public 的形状 ==\n";
 $pub = tc_features_public($db, $U(1));
-$check('返回三个键', count($pub) === 3 && isset($pub['notes'], $pub['im'], $pub['web']));
-$check('值都是布尔', is_bool($pub['notes']) && is_bool($pub['im']) && is_bool($pub['web']));
+$ids = tc_feature_ids();
+// 键集必须与 tc_feature_ids() 完全一致:漏一个前台永远拿不到它的开关,
+// 多一个则是改名后留下的死键 —— 两种都会让「后台关了但入口还在」复现。
+$check('键集等于 tc_feature_ids()', array_keys($pub) === $ids, implode(',', array_keys($pub)));
+$check('每个功能的值都是布尔', count(array_filter($pub, 'is_bool')) === count($ids));
 $check('缺省时与 tc_feature_allowed 逐项一致',
-    $pub['notes'] === tc_feature_allowed($db, $U(1), 'notes')
-    && $pub['im'] === tc_feature_allowed($db, $U(1), 'im')
-    && $pub['web'] === tc_feature_allowed($db, $U(1), 'web'));
+    count(array_filter($ids, function ($f) use ($pub, $db, $U) {
+        return $pub[$f] === tc_feature_allowed($db, $U(1), $f);
+    })) === count($ids));
 
 echo "== 11. 境内 IP 段表 ==\n";
 require __DIR__ . '/../lib/cnip.php';

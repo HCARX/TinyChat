@@ -53,7 +53,19 @@
         .then(function (r) { return r.ok ? r.json() : null; })
         .then(function (cfg) {
           if (!cfg || typeof cfg !== 'object') return;
-          try { localStorage.setItem('oc_cfg', JSON.stringify(cfg)); } catch (e) { /* 忽略 */ }
+          try {
+            // 不能整体替换:/api/config 是匿名接口,里面**没有** features 这层按人判定,
+            // 直接覆盖会把上一次 /api/me 写下的 features 抹掉,之后 OCFeatures.allowed
+            // 只能回落成 true —— 「仅管理员」在这轮加载里就形同没配。
+            var prev = null;
+            try { prev = JSON.parse(localStorage.getItem('oc_cfg') || 'null'); } catch (e2) { prev = null; }
+            if (prev && prev.features && !cfg.features) cfg.features = prev.features;
+            localStorage.setItem('oc_cfg', JSON.stringify(cfg));
+          } catch (e) { /* 忽略 */ }
+          // 配置到货后让各功能入口重判一次。各入口在 defer 阶段就已按**缓存**的
+          // oc_cfg 渲染完,而 /api/me 那次广播与本次刷新谁先到不定 —— 只靠前者会出现
+          // 「后台刚关掉某项功能,老用户刷新后入口还在」(要再刷一次才消失)。
+          try { window.dispatchEvent(new CustomEvent('oc:features', { detail: cfg.features })); } catch (e) { /* 忽略 */ }
           var p = cfg.perf || {};
           var cur = window.OC_PERF || {};
           var changed = !!p.noKatex !== !!cur.noKatex

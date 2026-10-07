@@ -4529,6 +4529,7 @@ const TAB_LOADERS = {
   notes: loadNotesSettings,
   im: loadImSettings,
   web: loadWebSettings,
+  toolbox: loadToolboxSettings,
   'ext-overview': () => loadExtOverview(),
   overview: () => { loadStats(); loadSystemBoard(); },
   usage: () => loadStats(),
@@ -4574,7 +4575,15 @@ async function loadModeration() {
   const s = d.settings || {};
   const mod = s.moderation || {};
   if ($('mod-enabled')) $('mod-enabled').checked = !!mod.enabled;
-  if ($('mod-words')) $('mod-words').value = mod.words || '';
+  // 演示身份拿不到词表(后端只下发了空串):输入框置空置灰,并给出说明,避免误以为词库被清空
+  const modRestricted = !!s.moderationRestricted;
+  const modWords = $('mod-words');
+  if (modWords) {
+    modWords.value = modRestricted ? '' : (mod.words || '');
+    modWords.disabled = modRestricted;
+    modWords.placeholder = modRestricted ? '演示管理员不可查看敏感词库' : '示例词一\n示例词二';
+  }
+  if ($('mod-demo-note')) $('mod-demo-note').classList.toggle('hidden', !modRestricted);
   if ($('agreement-enabled')) $('agreement-enabled').checked = !!s.agreementEnabled;
   if ($('agreement-html')) $('agreement-html').value = s.agreementHtml || '';
 }
@@ -4582,14 +4591,14 @@ async function loadModeration() {
   const save = $('moderation-save');
   if (!save) return;
   save.addEventListener('click', async () => {
+    const modWords = $('mod-words');
+    // 词表被演示边界屏蔽时不要提交 words:提交空串等价于清空运营方词库
     const payload = {
-      moderation: {
-        enabled: !!($('mod-enabled') && $('mod-enabled').checked),
-        words: ($('mod-words') && $('mod-words').value) || '',
-      },
+      moderation: { enabled: !!($('mod-enabled') && $('mod-enabled').checked) },
       agreementEnabled: !!($('agreement-enabled') && $('agreement-enabled').checked),
       agreementHtml: ($('agreement-html') && $('agreement-html').value) || '',
     };
+    if (!(modWords && modWords.disabled)) payload.moderation.words = (modWords && modWords.value) || '';
     save.disabled = true;
     try {
       const r = await api('/api/admin/settings', {
@@ -4771,7 +4780,7 @@ const ADMIN_GROUPS = {
   overview: [{ id: 'overview', label: '运营数据' }, { id: 'usage', label: '用量分析' }, { id: 'announce', label: '全站公告' }, { id: 'logs', label: '运行日志' }],
   // 拓展功能:三个「对话之外的附加面板」单独成组。此前散在「平台配置」里,与供应商/邮件/存储
   // 这类基础设施混在一起;它们共同点是「面向用户的附加功能」,还共享同一套可见性模型。
-  extensions: [{ id: 'ext-overview', label: '总览' }, { id: 'web', label: '在线浏览器' }, { id: 'notes', label: 'AI 笔记' }, { id: 'im', label: '在线聊天' }],
+  extensions: [{ id: 'ext-overview', label: '总览' }, { id: 'web', label: '在线浏览器' }, { id: 'toolbox', label: '在线工具箱' }, { id: 'notes', label: 'AI 笔记' }, { id: 'im', label: '在线聊天' }],
   users: [{ id: 'users', label: '用户' }, { id: 'groups', label: '用户组' }, { id: 'access', label: '模型授权' }, { id: 'verify', label: '用户验证' }, { id: 'invite', label: '邀请码' }],
   billing: [
     { id: 'packages', label: '额度套餐' },
@@ -4888,6 +4897,24 @@ document.addEventListener('click', async (e) => {
     } finally { webSave.disabled = false; }
     return;
   }
+  const toolboxSave = e.target.closest('#toolbox-settings-save');
+  if (toolboxSave) {
+    toolboxSave.disabled = true;
+    try {
+      const body = {
+        toolboxEnabled: $('toolbox-enabled').checked,
+        ...(readFeatureAccess('toolbox') || {}),
+      };
+      const r = await api('/api/admin/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error((d.error && d.error.message) || '保存失败');
+      toast('工具箱设置已保存');
+      await loadToolboxSettings();
+    } catch (err) {
+      toast(err.message || '保存失败', true);
+    } finally { toolboxSave.disabled = false; }
+    return;
+  }
   if (e.target.closest('#im-threads-refresh')) {
     loadImThreads().catch((err) => toast('加载失败: ' + err.message, true));
     return;
@@ -4907,6 +4934,7 @@ const FEATURE_META = {
   web: { label: '在线浏览器', desc: '服务端代理抓取网页并在同源下渲染' },
   notes: { label: 'AI 笔记', desc: 'Markdown 写作、附件上传与分享' },
   im: { label: '在线聊天', desc: '好友、单聊与群聊' },
+  toolbox: { label: '在线工具箱', desc: '用户自存 HTML 单页,在沙箱里打开运行' },
 };
 
 // 渲染一个功能的「可见范围」区块;分组列表按需从 /api/admin/groups 拉取并缓存
@@ -4996,7 +5024,7 @@ async function loadExtOverview() {
   await ensureGroupsCache();
   const r = await api('/api/admin/settings');
   const s = ((await r.json()) || {}).settings || {};
-  const switchOn = { web: s.browserEnabled !== false, notes: s.notesEnabled !== false, im: s.imEnabled !== false };
+  const switchOn = { web: s.browserEnabled !== false, notes: s.notesEnabled !== false, im: s.imEnabled !== false, toolbox: s.toolboxEnabled !== false };
   const modeText = (feat) => {
     const m = s[feat + 'Access'];
     if (m === 'admin') return '仅管理员';
@@ -5009,7 +5037,7 @@ async function loadExtOverview() {
   };
   const grid = $('ext-status-grid');
   if (grid) {
-    grid.innerHTML = ['web', 'notes', 'im'].map((f) => {
+    grid.innerHTML = ['web', 'toolbox', 'notes', 'im'].map((f) => {
       const on = switchOn[f];
       const mode = modeText(f);
       const effective = !on ? '已关闭' : (mode === '所有人' ? '所有登录用户' : mode);
@@ -5025,11 +5053,20 @@ async function loadExtOverview() {
   }
   const note = $('ext-status-note');
   if (note) {
-    const anyOff = ['web', 'notes', 'im'].some((f) => !switchOn[f]);
+    const anyOff = ['web', 'toolbox', 'notes', 'im'].some((f) => !switchOn[f]);
     note.textContent = anyOff
       ? '提醒：已关闭的功能会连同其接口一起拒绝，前台入口也不显示。'
-      : '三个功能当前都开着。修改后用户下次刷新页面生效。';
+      : '这些功能当前都开着。修改后用户下次刷新页面生效。';
   }
+}
+
+// ---------- 在线工具箱:设置(总开关 / 可见范围) ----------
+async function loadToolboxSettings() {
+  await ensureGroupsCache();
+  const r = await api('/api/admin/settings');
+  const s = ((await r.json()) || {}).settings || {};
+  if ($('toolbox-enabled')) $('toolbox-enabled').checked = s.toolboxEnabled !== false;
+  renderFeatureAccessBlock('toolbox', s);
 }
 
 // ---------- 在线浏览器:设置(总开关 / 可见范围 / 总结次数上限 / 主页收藏夹) ----------

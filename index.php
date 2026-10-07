@@ -237,6 +237,10 @@ function tc_dispatch($method, $path) {
         array('GET', '#^/api/web/usage$#', 'tc_api_web_usage'),
         array('GET', '#^/api/web/bookmarks$#', 'tc_api_web_bookmarks_get'),
         array('POST', '#^/api/web/bookmarks$#', 'tc_api_web_bookmarks_save'),
+        // 在线工具箱:整文档同步(与笔记同构) + 工具页面的签名输出(响应头带 CSP sandbox)
+        array('GET', '#^/api/sync/toolbox$#', 'tc_api_toolbox_get'),
+        array('POST', '#^/api/sync/toolbox$#', 'tc_api_toolbox_save'),
+        array('GET', '#^/api/toolbox/page$#', 'tc_api_toolbox_page'),
         array('GET', '#^/api/assistants$#', 'tc_api_list_assistants'),
         array('POST', '#^/api/assistants/categories$#', 'tc_api_create_assistant_category'),
         array('POST', '#^/api/assistants/categories/([^/]+)$#', 'tc_api_update_assistant_category'),

@@ -1,0 +1,278 @@
+/* ============================================================
+   在线工具箱 — 用户自存 HTML 单页的列表 / 编辑 / 沙箱预览
+   布局:全屏弹窗(顶栏 + 内容区),内容区三视图互斥(列表 / 编辑器 / 预览)。
+   配色全部走主题变量,深浅色与四套主题自动适配。
+   类名前缀 tb-,与 im- / web- 一样刻意避开 "chat" 关键词。
+   ============================================================ */
+
+/* 与其它全屏模块同层(1600);确认框 3100 会自然盖在它上面 */
+.tb-mask { z-index: 1600; }
+.tb-mask .modal-card { display: none; }
+
+.tb-fs {
+  font-size: var(--fs, 14px);
+  background: var(--bg-app);
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  opacity: 0;
+  transform: scale(0.985) translateY(8px);
+  transition: opacity 0.2s ease, transform 0.24s cubic-bezier(0.2, 0.8, 0.3, 1);
+}
+.tb-mask.show .tb-fs { opacity: 1; transform: none; }
+
+/* ---------- 顶栏 ---------- */
+.tb-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 54px;
+  box-sizing: border-box;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--hairline);
+  background: var(--bg-surface);
+  flex-shrink: 0;
+}
+.tb-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  color: var(--text-primary);
+  flex-shrink: 0;
+}
+.tb-title .oc-icon { color: var(--text-tertiary); }
+.tb-sub {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.857rem;
+  color: var(--text-tertiary);
+}
+.tb-head-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+
+/* ---------- 通用按钮 ---------- */
+.tb-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 12px;
+  box-sizing: border-box;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md, 9px);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font-size: 0.893rem;
+  font-family: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+.tb-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+.tb-btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  /* 文字用与 accent 配对的 token:#fff 只在深色主题下碰巧正确 */
+  color: var(--primary-text);
+}
+.tb-btn.primary:hover { filter: brightness(1.06); color: var(--primary-text); }
+.tb-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+
+.tb-icon-btn {
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: var(--radius-md, 9px);
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.tb-icon-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+.tb-icon-btn.danger:hover { color: #dc2626; }
+
+.tb-grow { flex: 1; }
+
+/* ---------- 内容区(三视图互斥) ---------- */
+.tb-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.tb-view {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 16px;
+  box-sizing: border-box;
+  overflow: auto;
+}
+/* 列表视图给网格留出最大宽度,宽屏下别把卡片拉得过长 */
+#tb-view-list { align-items: center; }
+#tb-grid {
+  width: 100%;
+  max-width: 1100px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 12px;
+  align-content: start;
+}
+.tb-loading {
+  grid-column: 1 / -1;
+  padding: 40px 0;
+  text-align: center;
+  color: var(--text-tertiary);
+}
+
+/* ---------- 工具卡片 ---------- */
+.tb-card {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 10px 10px 12px;
+  box-sizing: border-box;
+  border-radius: var(--radius-lg, 12px);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-sm, 0 1px 2px rgba(0, 0, 0, 0.06));
+  transition: box-shadow 0.15s ease, transform 0.15s ease;
+}
+.tb-card:hover { box-shadow: var(--shadow-md, 0 4px 12px rgba(0, 0, 0, 0.08)); }
+.tb-card-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  border-radius: var(--radius-md, 9px);
+}
+.tb-card-ico {
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+}
+.tb-card-text { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.tb-card-name {
+  font-weight: 500;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tb-card-meta { font-size: 0.786rem; color: var(--text-tertiary); }
+.tb-card-acts { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
+/* 「新建」卡片:虚线占位,与真实工具区分开 */
+.tb-card-new {
+  border: 1px dashed var(--hairline);
+  background: transparent;
+  box-shadow: none;
+  justify-content: center;
+  gap: 8px;
+  min-height: 56px;
+  color: var(--text-tertiary);
+  font-family: inherit;
+  font-size: 0.893rem;
+  cursor: pointer;
+}
+.tb-card-new:hover { border-color: var(--accent); color: var(--text-primary); box-shadow: none; }
+.tb-card-plus { display: inline-flex; }
+
+.tb-empty {
+  grid-column: 1 / -1;
+  padding: 32px 20px;
+  border-radius: var(--radius-lg, 12px);
+  background: var(--bg-surface);
+  text-align: center;
+}
+.tb-empty-title { margin: 0 0 6px; font-weight: 600; color: var(--text-primary); }
+.tb-empty-desc { margin: 0 auto; max-width: 540px; font-size: 0.893rem; line-height: 1.7; color: var(--text-tertiary); }
+
+/* ---------- 编辑器 ---------- */
+#tb-view-editor { gap: 10px; align-items: center; }
+#tb-view-editor > * { width: 100%; max-width: 1100px; }
+.tb-field { display: flex; flex-direction: column; gap: 5px; }
+.tb-field-grow { flex: 1; min-height: 0; }
+.tb-label {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 0.857rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+.tb-hint { font-weight: 400; color: var(--text-tertiary); }
+.tb-input {
+  height: 36px;
+  padding: 0 12px;
+  box-sizing: border-box;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md, 9px);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 0.929rem;
+}
+.tb-input:focus, .tb-code:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
+.tb-code {
+  flex: 1;
+  min-height: 240px;
+  padding: 12px;
+  box-sizing: border-box;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md, 9px);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  font-size: 0.857rem;
+  line-height: 1.6;
+  resize: none;
+  white-space: pre;
+  tab-size: 2;
+}
+.tb-editor-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.tb-count { font-size: 0.786rem; color: var(--text-tertiary); }
+
+/* ---------- 预览 ---------- */
+#tb-view-preview { gap: 10px; padding-bottom: 16px; }
+.tb-preview-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.tb-preview-name {
+  font-weight: 500;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 40%;
+}
+.tb-frame-wrap {
+  flex: 1;
+  min-height: 0;
+  border-radius: var(--radius-lg, 12px);
+  overflow: hidden;
+  background: #fff;      /* 工具页多半按白底写样式,给个中性画布 */
+  box-shadow: var(--shadow-sm, 0 1px 2px rgba(0, 0, 0, 0.06));
+}
+.tb-frame { width: 100%; height: 100%; border: 0; display: block; background: #fff; }
+
+/* ---------- 移动端 ---------- */
+@media (max-width: 768px) {
+  .tb-head { flex-wrap: wrap; row-gap: 6px; padding: 8px 10px; }
+  .tb-sub { order: 3; flex-basis: 100%; }
+  .tb-view { padding: 10px; }
+  #tb-grid { grid-template-columns: 1fr; }
+  .tb-preview-name { max-width: 100%; }
+  .tb-editor-bar .tb-btn { flex: 1; justify-content: center; }
+}

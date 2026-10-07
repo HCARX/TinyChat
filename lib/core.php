@@ -6,9 +6,22 @@ if (!defined('TC_ROOT')) {
     define('TC_ROOT', dirname(__DIR__));
 }
 
-define('TC_VERSION', '2.0.142');
+define('TC_VERSION', '2.0.143');
 // 单篇笔记正文上限(字符)。超出时接口明确报错而不是静默截断。
 define('TC_NOTE_MAX_CHARS', 500000);
+// 敏感词库上限(去重后的条数)。达到上限后新增词条被丢弃,单个词条本身不截断。
+define('TC_MODERATION_MAX_WORDS', 50000);
+// ---- 在线工具箱 ----
+// 每用户最多几个工具、单个工具 HTML 上限(字符)、每用户总字符上限。
+// 与笔记同一取舍:超出时接口明确报错,不静默截断 —— 用户的工具被悄悄截掉半页,
+// 表现是「页面偶尔缺一半脚本」,比直接报错难查得多。
+define('TC_TOOLBOX_MAX_ITEMS', 50);
+define('TC_TOOLBOX_MAX_HTML', 200000);
+define('TC_TOOLBOX_MAX_TOTAL', 4000000);
+// 工具打开时用的 Cookie(见 lib/api.php 的 tc_toolbox_cookie_*):
+// 页面是在 iframe/新标签页里被**浏览器直接导航**的,带不了 Authorization 头,
+// 只能靠 Cookie 认人。作用域与笔记附件 Cookie 分开,便于各自失效。
+define('TC_TOOLBOX_COOKIE', 'oc_tbox');
 define('TC_DB_VERSION', 2);
 define('TC_PBKDF2_ITER', 120000);
 define('TC_LOG_LIMIT', 500);
@@ -74,6 +87,50 @@ function tc_mail_default_templates() {
             '链接 {expires} 内有效。'
         ),
     );
+}
+
+// 内置的默认用户协议正文(HTML)。后台「内容安全」里可自由修改,默认不启用
+// (agreementEnabled=false 时公开页 /agreement 返回 404)。预置一段通用文本是为了让管理员
+// 不必从空白起步:内容刻意用「本平台」这类中性称谓,可直接套用,也可按实际业务改写。
+function tc_default_agreement_html() {
+    return '<h3>一、协议的接受</h3>'
+        . '<p>欢迎使用本平台。在使用本平台前，请你仔细阅读并充分理解本协议的全部内容。'
+        . '当你勾选同意、注册账号或以其他方式使用本平台服务时，即表示你已阅读、理解并同意接受本协议的全部条款。'
+        . '如你不同意本协议的任何内容，请停止注册或使用本平台。</p>'
+        . '<h3>二、账号注册与安全</h3>'
+        . '<p>你在注册时应提供真实、准确、完整的必要信息，并及时更新。你应妥善保管账号与密码，'
+        . '对通过你的账号进行的一切操作负责。如发现账号被他人非法使用，请立即通知本平台。</p>'
+        . '<h3>三、用户行为规范</h3>'
+        . '<p>你承诺遵守中华人民共和国法律法规及本平台的相关规则。使用本平台时，你不得从事或协助他人从事下列行为：</p>'
+        . '<ol>'
+        . '<li>发布、传播法律法规禁止的信息，或侵犯他人合法权益的内容；</li>'
+        . '<li>利用本平台从事欺诈、骚扰、赌博、传播恶意程序等违法活动；</li>'
+        . '<li>通过自动化程序或技术手段恶意请求、抓取、攻击本平台，影响服务的正常运行；</li>'
+        . '<li>未经许可收集、存储、使用他人的个人信息；</li>'
+        . '<li>其他违反法律法规、公序良俗或本平台规则的行为。</li>'
+        . '</ol>'
+        . '<h3>四、人工智能生成内容</h3>'
+        . '<p>本平台的输出由人工智能模型生成，可能存在不准确、不完整或不符合预期的情况，仅供你参考，'
+        . '不构成任何专业建议。你在使用生成内容前应自行核实，并对据此作出的判断与决定自行承担责任。</p>'
+        . '<h3>五、内容与知识产权</h3>'
+        . '<p>你对自己依法享有权利的内容保留相应权利，并应保证所提交的内容未侵犯任何第三方的合法权益。'
+        . '本平台的界面、标识、程序及相关文档等知识产权归本平台或相应权利人所有。</p>'
+        . '<h3>六、隐私与数据保护</h3>'
+        . '<p>本平台重视你的个人信息保护，仅在提供与改进服务所必需的范围内处理相关信息，'
+        . '并采取合理的技术与管理措施保障数据安全。具体处理规则以本平台的隐私说明为准。</p>'
+        . '<h3>七、服务变更、中断与终止</h3>'
+        . '<p>本平台可能因升级、维护、故障或不可抗力等原因变更、中断或终止部分或全部服务，并将尽合理努力提前通知。'
+        . '对于因此造成的不便或损失，本平台在法律允许的范围内不承担责任。'
+        . '如你违反本协议或相关规则，本平台有权视情节采取警示、限制功能、暂停或终止账号等措施。</p>'
+        . '<h3>八、免责声明</h3>'
+        . '<p>在法律允许的最大范围内，本平台不对服务的绝对稳定、无差错或满足你的特定用途作出保证。'
+        . '对于因不可抗力、第三方原因或非本平台过错导致的服务中断或数据丢失，本平台不承担责任。</p>'
+        . '<h3>九、协议的修改</h3>'
+        . '<p>本平台有权根据法律法规变化或运营需要修改本协议，并以适当方式公布。修改后的协议自公布之日起生效。'
+        . '若你继续使用本平台，即视为接受修改后的协议。</p>'
+        . '<h3>十、其他</h3>'
+        . '<p>本协议的解释与争议解决适用中华人民共和国法律。本协议部分条款如被认定无效或不可执行，'
+        . '不影响其他条款的效力。本协议自公布之日起生效。</p>';
 }
 
 $TC_SETTINGS_DEFAULTS = array(
@@ -245,6 +302,11 @@ $TC_SETTINGS_DEFAULTS = array(
     // 单页面子资源并发抓取上限(1 = 串行)。调大能让重图片的页面更快出来,
     // 但并发出网会同时占用多个连接与内存,虚拟主机上不宜过高。
     'webConcurrency' => 6,
+    // ---- 在线工具箱(用户自存的 HTML 单页) ----
+    // 总开关(关闭后前台入口隐藏、接口一律拒绝)。
+    // 存的是用户自己写的 HTML,打开时在**不透明源**的沙箱里运行,读不到本站登录态;
+    // 数量与体积上限见 TC_TOOLBOX_MAX_* 常量。
+    'toolboxEnabled' => true,
 );
 $TC_SETTINGS_DEFAULTS['mailTemplates'] = tc_mail_default_templates();
 // 三个拓展功能的访问级别(全站 / 仅管理员 / 仅名单)与名单
@@ -1060,7 +1122,12 @@ function tc_normalize_settings($raw) {
         'words' => tc_moderation_words_text(isset($mod['words']) ? $mod['words'] : ''),
     );
     $s['agreementEnabled'] = !empty($s['agreementEnabled']);
-    $s['agreementHtml'] = substr((string) (isset($s['agreementHtml']) ? $s['agreementHtml'] : ''), 0, 200000);
+    // 用户协议:正文为空时填入内置默认模板,方便管理员在此基础上改写;写过内容就不再覆盖
+    // (与邮件模板的版本升级同一取舍)。启用与否只由 agreementEnabled 决定,默认不启用。
+    if (trim((string) (isset($s['agreementHtml']) ? $s['agreementHtml'] : '')) === '') {
+        $s['agreementHtml'] = tc_default_agreement_html();
+    }
+    $s['agreementHtml'] = substr((string) $s['agreementHtml'], 0, 200000);
     // 性能优化开关(默认关闭)
     $s['notesEnabled'] = !array_key_exists('notesEnabled', $s) || !empty($s['notesEnabled']);
     $s['notesQuotaMb'] = min(102400, max(0, (int) (isset($s['notesQuotaMb']) ? $s['notesQuotaMb'] : 200)));
@@ -1113,8 +1180,8 @@ function tc_normalize_settings($raw) {
     $s['webCnAllowAssets'] = !array_key_exists('webCnAllowAssets', $s) || !empty($s['webCnAllowAssets']);
     $s['webDailyTrafficMb'] = min(1024000, max(0, (int) (isset($s['webDailyTrafficMb']) ? $s['webDailyTrafficMb'] : 500)));
     $s['webConcurrency'] = min(16, max(1, (int) (isset($s['webConcurrency']) ? $s['webConcurrency'] : 6) ?: 6));
-    // 三个拓展功能的访问级别与名单(在线浏览器 / AI 笔记 / 在线聊天)
-    foreach (array('notes', 'im', 'web') as $feat) {
+    // 拓展功能的访问级别与名单(在线浏览器 / AI 笔记 / 在线聊天 / 在线工具箱)
+    foreach (array('notes', 'im', 'web', 'toolbox') as $feat) {
         $s[$feat . 'Access'] = tc_feature_access_mode(isset($s[$feat . 'Access']) ? $s[$feat . 'Access'] : 'all');
         $s[$feat . 'AccessUsers'] = tc_feature_access_list(isset($s[$feat . 'AccessUsers']) ? $s[$feat . 'AccessUsers'] : array());
         $s[$feat . 'AccessGroups'] = tc_feature_access_list(isset($s[$feat . 'AccessGroups']) ? $s[$feat . 'AccessGroups'] : array(), 50);
@@ -1345,6 +1412,12 @@ function tc_admin_settings_public($s, $forDemo = false) {
         $out['smtp'] = array('host' => '', 'port' => 587, 'username' => '', 'password' => '', 'encryption' => 'tls', 'fromName' => '', 'fromEmail' => '');
         $out['smtpRestricted'] = true;
     }
+    // 敏感词库是运营方的审核策略,演示身份不可见:连内容都不下发(前端据此把输入框置为只读)。
+    // enabled 开关仍照常下发,方便演示者了解该功能存在。
+    if ($forDemo && !empty($out['moderation']) && is_array($out['moderation'])) {
+        $out['moderation']['words'] = '';
+        $out['moderationRestricted'] = true;
+    }
     $out['webSearchAllowUser'] = !empty($out['webSearchAllowUser']);
     $out['mineruAllowUser'] = !empty($out['mineruAllowUser']);
     return $out;
@@ -1369,6 +1442,12 @@ function tc_empty_db() {
         'userNoteRevisions' => new stdClass(),
         // 笔记分享:{token: {token, ownerId, noteId, mode, createdAt}},内容不快照、读取时按属主实时取
         'noteShares' => new stdClass(),
+        // 在线工具箱:按用户拆成 tbox:{uid} 行(与 userNotes 同一套省写放大机制),
+        // 值为 {items:[{id,title,html,createdAt,updatedAt}], tombs:{id:删除时间}} 整份文档,
+        // 由客户端驱动同步。HTML 原样保存、不做清洗 —— 隔离靠打开时的沙箱,不靠改写内容。
+        'userToolbox' => new stdClass(),
+        // 工具箱文档乐观并发修订号:{userId: int},语义与 userNoteRevisions 一致
+        'userToolboxRevisions' => new stdClass(),
         // 用户设置(界面偏好/外观/群聊配置/生成参数等):按用户拆成 uset:{uid} 行,
         // 值为整份设置文档(含逐键更新时间戳),换设备登录即可恢复,无需重新设置
         'userSettings' => new stdClass(),
@@ -1480,6 +1559,17 @@ function tc_demo_arm(&$db, $user, $force = false) {
     }
     $revMap = tc_assoc(isset($db['userChatRevisions']) ? $db['userChatRevisions'] : array());
     $snapshot['demoChatRevision'] = isset($revMap[$uid]) ? (int) $revMap[$uid] : 0;
+    // 工具箱同为「演示管理员的个人数据」:内容不在上面那六个站点字段里,不显式定格的话,
+    // 演示期间存进去的工具在到期还原后会永久留下 —— 与笔记一样会变成清不掉的痕迹。
+    $tboxMap = tc_assoc(isset($db['userToolbox']) ? $db['userToolbox'] : array());
+    if ($prevBase !== null && array_key_exists('demoToolbox', $prevBase)) {
+        $snapshot['demoToolbox'] = $prevBase['demoToolbox'];          // 沿用最初基准
+    } else {
+        $snapshot['demoToolbox'] = ($uid !== '' && isset($tboxMap[$uid]) && is_array($tboxMap[$uid]))
+            ? $tboxMap[$uid] : array();
+    }
+    $tboxRevMap = tc_assoc(isset($db['userToolboxRevisions']) ? $db['userToolboxRevisions'] : array());
+    $snapshot['demoToolboxRevision'] = isset($tboxRevMap[$uid]) ? (int) $tboxRevMap[$uid] : 0;
     $db['demoSnapshot'] = $snapshot;
     $db['settings']['demoMode'] = true;
     return true;
@@ -1524,6 +1614,18 @@ function tc_demo_revert(&$db) {
                 unset($delMap[$uid]);
             }
             $db['userDeletedChats'] = tc_object_map($delMap);
+            // 工具箱还原到转换那一刻(内容不在站点字段快照里,必须显式处理,否则演示期间
+            // 存进去的工具会一直留着)
+            $tboxMap = tc_assoc(isset($db['userToolbox']) ? $db['userToolbox'] : array());
+            if (array_key_exists('demoToolbox', $snap) && is_array($snap['demoToolbox'])) {
+                $tboxMap[$uid] = $snap['demoToolbox'];
+            } else {
+                unset($tboxMap[$uid]);
+            }
+            $db['userToolbox'] = tc_object_map($tboxMap);
+            $tboxRevMap = tc_assoc(isset($db['userToolboxRevisions']) ? $db['userToolboxRevisions'] : array());
+            $tboxRevMap[$uid] = (isset($tboxRevMap[$uid]) ? (int) $tboxRevMap[$uid] : 0) + 1;
+            $db['userToolboxRevisions'] = tc_object_map($tboxRevMap);
             foreach ($db['users'] as &$u) {
                 if (!isset($u['id']) || (string) $u['id'] !== $uid) continue;
                 if (array_key_exists('demoQuota', $snap)) $u['quota'] = $snap['demoQuota'];
@@ -1542,6 +1644,7 @@ function tc_demo_revert(&$db) {
         'demoQuota' => array_key_exists('demoQuota', $snap) ? $snap['demoQuota'] : 0,
         'demoQuotaGrants' => array_key_exists('demoQuotaGrants', $snap) ? $snap['demoQuotaGrants'] : array(),
         'demoDeletedChats' => array_key_exists('demoDeletedChats', $snap) ? $snap['demoDeletedChats'] : array('chats' => array(), 'tombs' => array()),
+        'demoToolbox' => array_key_exists('demoToolbox', $snap) ? $snap['demoToolbox'] : array(),
     );
     // 还原标记:客户端凭它识别「这是一次整体还原」,从而丢弃本地旧副本整体采纳云端。
     // 没有这个标记,浏览器里残留的旧对话会在下一次合并时把已还原的内容"复活"回服务端。
@@ -2101,7 +2204,7 @@ function tc_moderation_words_text($raw) {
         if (isset($seen[$k])) continue;
         $seen[$k] = true;
         $out[] = $w;
-        if (count($out) >= 5000) break;
+        if (count($out) >= TC_MODERATION_MAX_WORDS) break;
     }
     return implode("\n", $out);
 }
@@ -2203,6 +2306,7 @@ function tc_db_load_with_baseline($pdo) {
     $db = tc_empty_db();
     $db['userChats'] = new stdClass();
     $db['userNotes'] = new stdClass();
+    $db['userToolbox'] = new stdClass();
     $orig = array();
     $origChats = array();
     $origDeleted = array();
@@ -2210,6 +2314,7 @@ function tc_db_load_with_baseline($pdo) {
     $origSettings = array();
     $origMsgs = array();
     $origArch = array();
+    $origToolbox = array();
     $rows = $pdo->query('SELECT k, v FROM store')->fetchAll();
     foreach ($rows as $row) {
         $k = (string) $row['k'];
@@ -2262,12 +2367,20 @@ function tc_db_load_with_baseline($pdo) {
             }
             continue;
         }
+        if (strncmp($k, 'tbox:', 5) === 0) {
+            $origToolbox[substr($k, 5)] = $raw;
+            $val = json_decode($raw, true);
+            if (is_array($val)) {
+                $db['userToolbox']->{substr($k, 5)} = $val;
+            }
+            continue;
+        }
         $orig[$k] = $raw;
         $val = json_decode($raw, true);
         if ($val === null && $raw !== 'null') continue;
         $db[$k] = $val;
     }
-    return array(tc_migrate_db($db), $orig, $origChats, $origDeleted, $origNotes, $origSettings, $origMsgs, $origArch);
+    return array(tc_migrate_db($db), $orig, $origChats, $origDeleted, $origNotes, $origSettings, $origMsgs, $origArch, $origToolbox);
 }
 
 // 整库快照写入(迁移导入 / 恢复备份用):清空后按顶层键落行
@@ -2296,6 +2409,12 @@ function tc_db_write_snapshot($pdo, $db) {
         if ($k === 'userSettings') {
             foreach (tc_assoc($v) as $uid => $row) {
                 $ins->execute(array(':k' => 'uset:' . $uid, ':v' => tc_json_encode($row)));
+            }
+            continue;
+        }
+        if ($k === 'userToolbox') {
+            foreach (tc_assoc($v) as $uid => $row) {
+                $ins->execute(array(':k' => 'tbox:' . $uid, ':v' => tc_json_encode($row)));
             }
             continue;
         }
@@ -2329,9 +2448,9 @@ function tc_with_db($write, $fn) {
     // 先取锁后读,锁内读到的一定是最新状态,diff 也建立在最新基线上。
     if ($write) $pdo->exec('BEGIN IMMEDIATE');
     $db = null;
-    $orig = $origChats = $origDeleted = $origNotes = $origSettings = $origMsgs = $origArch = array();
+    $orig = $origChats = $origDeleted = $origNotes = $origSettings = $origMsgs = $origArch = $origToolbox = array();
     try {
-        list($db, $orig, $origChats, $origDeleted, $origNotes, $origSettings, $origMsgs, $origArch) = tc_db_load_with_baseline($pdo);
+        list($db, $orig, $origChats, $origDeleted, $origNotes, $origSettings, $origMsgs, $origArch, $origToolbox) = tc_db_load_with_baseline($pdo);
     } catch (Throwable $e) {
         if ($write) { try { $pdo->exec('ROLLBACK'); } catch (Throwable $e2) {} }
         throw $e;
@@ -2344,7 +2463,7 @@ function tc_with_db($write, $fn) {
         'write' => $write, 'committed' => false, 'pdo' => $pdo,
         'orig' => $orig, 'origChats' => $origChats, 'origDeleted' => $origDeleted,
         'origNotes' => $origNotes, 'origSettings' => $origSettings,
-        'origMsgs' => $origMsgs, 'origArch' => $origArch,
+        'origMsgs' => $origMsgs, 'origArch' => $origArch, 'origToolbox' => $origToolbox,
     );
     try {
         $ret = $fn($db);
@@ -2389,11 +2508,13 @@ function tc_db_commit() {
         $newDeleted = tc_assoc(isset($db['userDeletedChats']) ? $db['userDeletedChats'] : null);
         $newNotes = tc_assoc(isset($db['userNotes']) ? $db['userNotes'] : null);
         $newSettings = tc_assoc(isset($db['userSettings']) ? $db['userSettings'] : null);
+        $newToolbox = tc_assoc(isset($db['userToolbox']) ? $db['userToolbox'] : null);
         $newMsgs = tc_assoc(isset($db['imMessages']) ? $db['imMessages'] : null);
         $newArch = tc_assoc(isset($db['imDeleted']) ? $db['imDeleted'] : null);
         $origDeleted = isset($ctx['origDeleted']) ? $ctx['origDeleted'] : array();
         $origNotes = isset($ctx['origNotes']) ? $ctx['origNotes'] : array();
         $origSettings = isset($ctx['origSettings']) ? $ctx['origSettings'] : array();
+        $origToolbox = isset($ctx['origToolbox']) ? $ctx['origToolbox'] : array();
         $origMsgs = isset($ctx['origMsgs']) ? $ctx['origMsgs'] : array();
         $origArch = isset($ctx['origArch']) ? $ctx['origArch'] : array();
         foreach ($db as $k => $v) {
@@ -2438,6 +2559,17 @@ function tc_db_commit() {
                 }
                 foreach ($origSettings as $uid => $json) {
                     if (!array_key_exists($uid, $newSettings)) $del->execute(array(':k' => 'uset:' . $uid));
+                }
+                continue;
+            }
+            if ($k === 'userToolbox') {
+                foreach ($newToolbox as $uid => $row) {
+                    $json = tc_json_encode($row);
+                    if (isset($origToolbox[$uid]) && $origToolbox[$uid] === $json) continue;
+                    $ups->execute(array(':k' => 'tbox:' . $uid, ':v' => $json, ':v2' => $json));
+                }
+                foreach ($origToolbox as $uid => $json) {
+                    if (!array_key_exists($uid, $newToolbox)) $del->execute(array(':k' => 'tbox:' . $uid));
                 }
                 continue;
             }
@@ -3135,6 +3267,8 @@ function tc_auth_user($db) {
             // 顺手补发笔记附件 Cookie:浏览器加载正文里的 <img>/<a> 带不了请求头,
             // 只能靠它认人(实现见 lib/api.php,只加载 core.php 的自检脚本没有它)
             if (function_exists('tc_note_attach_cookie_sync')) tc_note_attach_cookie_sync($db, $u);
+            // 工具箱页面同理:它是在 iframe / 新标签页里被浏览器直接导航的,也没有请求头
+            if (function_exists('tc_toolbox_cookie_sync')) tc_toolbox_cookie_sync($db, $u);
             return $u;
         }
     }

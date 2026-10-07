@@ -64,6 +64,12 @@ jobs:
         # 脱离沙箱、且垫片把 window.open 改写成本站同源地址,于是能直读 localStorage 里的
         # 令牌。功能照常、界面上看不出任何异常,只是属性里多一个词 —— 读代码极易看漏。
         run: node tests/web-frame-sandbox.js
+      - name: 在线工具箱沙箱契约自检(iframe 不得带 allow-same-origin / 工具页 CSP sandbox)
+        # 工具箱存的是用户自己的任意 HTML,服务端刻意不清洗它 —— 隔离全靠「不透明来源」,
+        # 两条打开路径各有一道:预览用 iframe sandbox 属性(不带 allow-same-origin),
+        # 新标签页用 /api/toolbox/page 响应头里的 CSP sandbox。少了任何一道,用户工具里
+        # 一段 fetch('/api/me') 就能读到登录令牌。属性少一个词,界面完全看不出区别。
+        run: node tests/toolbox-sandbox.js
       - name: AI 整理解析自检(弱模型畸形输出 / 降级格式 / 输入裁剪)
         run: node tests/notes-archive.js
       - name: 弹窗框架契约自检(关闭回调不递归爆栈 / Esc 链路)
@@ -102,6 +108,11 @@ jobs:
         run: php tests/im-social.php
       - name: 在线浏览器代理自检(票据验签 / URL 绝对化 / SSRF / HTML·CSS 改写 / cookie jar)
         run: php tests/web-proxy.php
+      - name: 在线工具箱自检(读写与修订号 / 清洗与上限 / 墓碑 / 签名页面地址 / 开关矩阵)
+        # 「超限必须明确报错而不是静默截断」是这里最容易退化的点:静默丢弃时用户看到的是
+        # 「保存成功但少了一个工具」,不报错也不丢数据的样子最难排查。tc_fail() 会 exit,
+        # 这些路径只能在子进程里验(与 sys-quota / json-sidecars 同一手法)。
+        run: php tests/toolbox.php
       - name: 拓展功能可见性自检(默认语义 / 仅管理员 / 名单 / 用户组 / 境内 IP 段二分查找)
         run: php tests/feature-access.php
       - name: 对话云同步截断自检(截断点必须落在 Markdown 之外 / 图片本体靠附件承载)
@@ -203,3 +214,9 @@ jobs:
       # 后者只能真浏览器量:响应头列表里有没有那一行,和「浏览器肯不肯渲染」是两回事。
       - name: 在线浏览器表单提交 + 代理页可嵌自检(字段不丢 / 失败页不是白屏)
         run: node tests/web-form-submit.js
+      # 工具箱的安全边界是「不透明源」——iframe 少一个 allow-same-origin 的写法,和
+      # 响应头里 CSP sandbox 那一行,读源码都看不出浏览器到底把它关在什么里。这里让
+      # 工具自己 postMessage 报出 window.origin 与 localStorage/Cookie 可达性,只有真跑
+      # 一遍才有结论;顺带守住落库往返、墓碑、删除后 404、开关隐藏入口与窄屏。
+      - name: 在线工具箱 GUI 自检(不透明源 / 新标签页端点 / 落库往返 / 窄屏)
+        run: node tests/toolbox-gui.mjs

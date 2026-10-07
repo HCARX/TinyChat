@@ -15,11 +15,11 @@
  * 两侧读同一份判定结果,避免出现「入口看得见、点进去 403」。
  */
 
-$TC_FEATURES = array('notes', 'im', 'web');
+$TC_FEATURES = array('notes', 'im', 'web', 'toolbox');
 
 function tc_feature_ids()
 {
-    return array('notes', 'im', 'web');
+    return array('notes', 'im', 'web', 'toolbox');
 }
 
 // 一组默认值,供 $TC_SETTINGS_DEFAULTS 与 tc_normalize_settings 共用
@@ -114,7 +114,7 @@ function tc_feature_allowed($db, $user, $feat)
 function tc_features_public($db, $user)
 {
     $out = array();
-    foreach (array('notes', 'im', 'web') as $f) {
+    foreach (tc_feature_ids() as $f) {
         $out[$f] = tc_feature_allowed($db, $user, $f);
     }
     return $out;

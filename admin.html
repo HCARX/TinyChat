@@ -9,16 +9,16 @@
 <meta name="robots" content="noindex,nofollow">
 <link rel="icon" type="image/svg+xml" href="./logo-icon.svg">
 <link rel="apple-touch-icon" href="./static/logo/app-icon-192.png">
-<link rel="stylesheet" href="./static/css/style.min.css?v=2.0.142">
-<link rel="stylesheet" href="./vendor/highlight/github.min.css?v=2.0.142" id="hljs-theme">
-<link rel="stylesheet" href="./vendor/katex/katex.min.css?v=2.0.142">
-<link rel="stylesheet" href="./static/css/enhanced.min.css?v=2.0.142">
-<link rel="stylesheet" href="./static/css/refine.min.css?v=2.0.142">
-<link rel="stylesheet" href="./static/css/redesign.min.css?v=2.0.142">
-<link rel="stylesheet" href="./static/css/polish.min.css?v=2.0.142">
-<link rel="stylesheet" href="./static/css/markdown.min.css?v=2.0.142">
-<link rel="stylesheet" href="./static/css/chrome.min.css?v=2.0.142">
-<script src="./static/js/theme-boot.min.js?v=2.0.142"></script>
+<link rel="stylesheet" href="./static/css/style.min.css?v=2.0.143">
+<link rel="stylesheet" href="./vendor/highlight/github.min.css?v=2.0.143" id="hljs-theme">
+<link rel="stylesheet" href="./vendor/katex/katex.min.css?v=2.0.143">
+<link rel="stylesheet" href="./static/css/enhanced.min.css?v=2.0.143">
+<link rel="stylesheet" href="./static/css/refine.min.css?v=2.0.143">
+<link rel="stylesheet" href="./static/css/redesign.min.css?v=2.0.143">
+<link rel="stylesheet" href="./static/css/polish.min.css?v=2.0.143">
+<link rel="stylesheet" href="./static/css/markdown.min.css?v=2.0.143">
+<link rel="stylesheet" href="./static/css/chrome.min.css?v=2.0.143">
+<script src="./static/js/theme-boot.min.js?v=2.0.143"></script>
 </head>
 <body class="admin-body">
 <form id="admin-fields" autocomplete="off" style="display:contents">
@@ -334,6 +334,19 @@
       </div>
       <p class="muted small">提醒：若目标站对数据中心 IP 有风控（如某些搜索引擎常返回验证码），属于预期现象，可在「平台配置 → 联网搜索」里配置外部检索源作为替代。</p>
       <button class="btn primary" id="web-settings-save" type="button">保存浏览器设置</button>
+    </div>
+  </div>
+
+  <!-- 在线工具箱 -->
+  <div class="admin-panel" id="panel-toolbox">
+    <div class="admin-card">
+      <h2>在线工具箱</h2>
+      <p class="muted small">用户在对话侧栏「<b>在线工具箱</b>」（在「在线浏览器」下方）里存放自写的 HTML 单页，之后一键打开运行：像一个只属于他自己的小工具箱。工具内容按用户隔离，存在数据库里、跟着账号走，换设备登录也能看到。</p>
+      <label class="user-form-admin"><span class="switch"><input type="checkbox" id="toolbox-enabled" checked><span class="slider"></span></span><span>开放在线工具箱（关闭后前台入口隐藏、接口一律拒绝）</span></label>
+      <div id="toolbox-access-block"></div>
+      <p class="muted small"><b>安全说明（请勿绕过）</b>：工具里的 HTML 由用户自己写，服务端<b>不做任何清洗</b>——脚本、表单、内联样式都是这类小工具的正当用法。隔离靠的是<b>不透明源沙箱</b>：面板内预览用 iframe <code>sandbox</code>（不带 <code>allow-same-origin</code>），「在新标签页打开」时响应头再带一层 CSP <code>sandbox</code>。两条路都让工具<b>读不到本站的登录令牌</b>，也无法通过弹窗挣脱沙箱。因此：不要为了让某个工具「能调本站接口」而去掉沙箱或改成同源直出——那等于把账号交给任意一份粘贴进来的 HTML。</p>
+      <p class="muted small">每个用户最多 <b>50</b> 个工具，单个工具 HTML 上限 <b>200000</b> 字符，合计上限 <b>4000000</b> 字符；超出时会明确报错而不是截断。工具在沙箱里运行，不能调用本站接口、也访问不到站内数据。</p>
+      <button class="btn primary" id="toolbox-settings-save" type="button">保存工具箱设置</button>
     </div>
   </div>
 
@@ -982,9 +995,10 @@
       <h2>内容安全</h2>
       <p class="muted small">发送前对最后一条用户消息做敏感词匹配，命中后拒绝本次请求（不拦截正常对话的上下文）。词库仅保存在服务器，不回传前端。输出侧流式内容无法撤回，如需输出侧审核请接入第三方审核服务。</p>
       <label class="user-form-admin"><span class="switch"><input type="checkbox" id="mod-enabled"><span class="slider"></span></span><span>启用敏感词过滤</span></label>
-      <label class="field"><span>敏感词库（每行一个，也支持逗号分隔，最多 5000 条）</span><textarea id="mod-words" rows="10" spellcheck="false" placeholder="示例词一&#10;示例词二" style="font-family:ui-monospace,SFMono-Regular,Consolas,'Courier New',monospace;font-size:12.5px;line-height:1.6"></textarea></label>
+      <p class="muted small hidden" id="mod-demo-note" style="color:#b45309">演示管理员不可查看敏感词库（词表属运营方的审核策略，不回传给演示身份）。</p>
+      <label class="field"><span>敏感词库（每行一个，也支持逗号分隔，最多 50000 条）</span><textarea id="mod-words" rows="10" spellcheck="false" placeholder="示例词一&#10;示例词二" style="font-family:ui-monospace,SFMono-Regular,Consolas,'Courier New',monospace;font-size:12.5px;line-height:1.6"></textarea></label>
       <h3 style="margin-top:20px">用户协议</h3>
-      <p class="muted small">启用后：<a href="/agreement" target="_blank" rel="noopener">/agreement</a> 展示协议正文，注册页需勾选同意才能提交。</p>
+      <p class="muted small">启用后：<a href="/agreement" target="_blank" rel="noopener">/agreement</a> 展示协议正文，注册页需勾选同意才能提交。正文已预置一份通用模板，可直接在此修改；<b>默认不启用</b>。</p>
       <label class="user-form-admin"><span class="switch"><input type="checkbox" id="agreement-enabled"><span class="slider"></span></span><span>启用用户协议</span></label>
       <label class="field"><span>协议正文（HTML，支持常用标签，最多 20 万字符）</span><textarea id="agreement-html" rows="10" spellcheck="false" style="font-family:ui-monospace,SFMono-Regular,Consolas,'Courier New',monospace;font-size:12.5px;line-height:1.6"></textarea></label>
       <button class="btn primary" id="moderation-save" type="button">保存内容安全设置</button>
@@ -1194,17 +1208,17 @@
   </div>
 </div>
 </form>
-<script defer src="./static/js/config.min.js?v=2.0.142"></script>
-<script defer src="./static/js/icons.min.js?v=2.0.142"></script>
-<script defer src="./vendor/markdown-it/markdown-it.min.js?v=2.0.142"></script>
-<script defer src="./vendor/markdown-it/markdown-it-footnote.min.js?v=2.0.142"></script>
-<script defer src="./vendor/markdown-it/markdown-it-emoji.min.js?v=2.0.142"></script>
-<script defer src="./vendor/dompurify/purify.min.js?v=2.0.142"></script>
-<script defer src="./vendor/katex/katex.min.js?v=2.0.142"></script>
-<script defer src="./vendor/highlight/highlight.min.js?v=2.0.142"></script>
-<script defer src="./static/js/ui.min.js?v=2.0.142"></script>
-<script defer src="./static/js/components.min.js?v=2.0.142"></script>
-<script defer src="./static/js/renderer.min.js?v=2.0.142"></script>
-<script defer src="./static/js/admin.min.js?v=2.0.142"></script>
+<script defer src="./static/js/config.min.js?v=2.0.143"></script>
+<script defer src="./static/js/icons.min.js?v=2.0.143"></script>
+<script defer src="./vendor/markdown-it/markdown-it.min.js?v=2.0.143"></script>
+<script defer src="./vendor/markdown-it/markdown-it-footnote.min.js?v=2.0.143"></script>
+<script defer src="./vendor/markdown-it/markdown-it-emoji.min.js?v=2.0.143"></script>
+<script defer src="./vendor/dompurify/purify.min.js?v=2.0.143"></script>
+<script defer src="./vendor/katex/katex.min.js?v=2.0.143"></script>
+<script defer src="./vendor/highlight/highlight.min.js?v=2.0.143"></script>
+<script defer src="./static/js/ui.min.js?v=2.0.143"></script>
+<script defer src="./static/js/components.min.js?v=2.0.143"></script>
+<script defer src="./static/js/renderer.min.js?v=2.0.143"></script>
+<script defer src="./static/js/admin.min.js?v=2.0.143"></script>
 </body>
 </html>

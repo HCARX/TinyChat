@@ -1060,6 +1060,8 @@ function tc_api_public_config($db) {
         'imMaxFileMb' => (int) (isset($s['imMaxFileMb']) ? $s['imMaxFileMb'] : 20),
         // 在线浏览器:前台据此决定入口是否显示(关闭时隐藏)
         'browserEnabled' => !isset($s['browserEnabled']) || !empty($s['browserEnabled']),
+        // 在线工具箱:前台据此决定入口是否显示(关闭时隐藏)。按人判定走 /api/me 的 features
+        'toolboxEnabled' => !isset($s['toolboxEnabled']) || !empty($s['toolboxEnabled']),
         // 仅限中国 IP 网站:前台在浏览器里提前提示,避免用户对着境外地址反复试
         'webCnOnly' => !array_key_exists('webCnOnly', $s) || !empty($s['webCnOnly']),
         // 国内站引用海外 CDN 的静态资源时是否放行(默认放行;关掉后子资源也必须解析在境内)
@@ -1314,6 +1316,8 @@ function tc_api_logout() {
         if ($user) tc_log_auth_event('auth', $user['name'], '退出登录', $user['id']);
         // 退出同时作废附件 Cookie:共享设备上换人使用时,不能靠旧 Cookie 继续读附件
         tc_note_attach_cookie_clear();
+        // 工具箱页面 Cookie 同理:否则换人使用后旧 Cookie 还能打开上一位的工具
+        tc_toolbox_cookie_clear();
         tc_json(200, array('ok' => true));
     });
 }
@@ -3286,7 +3290,9 @@ function tc_normalize_exposed_models($list, $providers) {
 function tc_api_admin_save_settings() {
     tc_with_db(true, function (&$db) {
         $admin = tc_require_admin($db);
-        $b = tc_read_json_body();
+        // 敏感词库上限 5 万条,词表随 settings 一起提交,2MB 默认上限装不下大词库,
+        // 这里放宽到与对话同步同一量级(16MB)。本接口仅管理员可达,不构成放大面。
+        $b = tc_read_json_body(16 * 1024 * 1024);
         $src = isset($b['settings']) && is_array($b['settings']) ? $b['settings'] : $b;
         // 公告是面向全站的门面信息,演示管理员不可改动
         if (tc_is_demo_user($admin) && array_key_exists('announcement', $src)) {
@@ -3300,6 +3306,12 @@ function tc_api_admin_save_settings() {
         // 协议正文会进公开页面。演示改动虽会回滚,回滚前所有访客都会看到,因此一并拦住。
         if (tc_is_demo_user($admin) && (array_key_exists('agreementHtml', $src) || array_key_exists('agreementEnabled', $src))) {
             tc_fail(403, '演示管理员不能修改用户协议');
+        }
+        // 敏感词库对演示身份不可见(见 tc_admin_settings_public):前端拿不到词表,提交里
+        // 只能是空值,一旦放行就会把运营方词库清空;而 enabled 开关又直接影响全站过滤是否生效。
+        // 两项都不该由演示身份改动,与公告/协议同一口径直接拒绝。
+        if (tc_is_demo_user($admin) && array_key_exists('moderation', $src)) {
+            tc_fail(403, '演示管理员不能修改内容安全设置');
         }
         if (array_key_exists('announcement', $src)) {
             if (!is_array($src['announcement'])) tc_fail(400, '公告设置格式不正确');
@@ -3943,6 +3955,8 @@ function tc_purge_user(&$db, $id) {
     $db['userDeletedChats'] = tc_object_map($delMap);
     // 笔记文档、修订号与分享链接一并清除
     tc_drop_user_notes($db, $id);
+    // 工具箱里的 HTML 一并清除(内容就在库里,没有旁挂文件)
+    tc_drop_user_toolbox($db, $id);
     // 用户设置(偏好/外观/群聊配置)同样不再保留
     tc_drop_user_settings($db, $id);
     $ownIds = array();
@@ -3985,6 +3999,7 @@ function tc_soft_delete_user(&$db, $id) {
         unset($delMap[$id]);
         $db['userDeletedChats'] = tc_object_map($delMap);
         tc_drop_user_notes($db, $id);
+        tc_drop_user_toolbox($db, $id);
         tc_drop_user_settings($db, $id);
         $ownIds = array();
         foreach ($db['providers'] as $p) if (isset($p['ownerId']) && $p['ownerId'] === $id) $ownIds[] = $p['id'];
@@ -5005,6 +5020,71 @@ function tc_note_attach_cookie_clear() {
         'samesite' => 'Lax',
     ));
 }
+
+// ---- 工具箱页面的取用凭据 ----
+// 「在新标签页打开工具」是一次**浏览器直接导航**,带不了 Authorization 头,所以和笔记附件
+// 一样只能认 Cookie。作用路径收窄到页面端点本身,别的请求都收不到它。
+function tc_toolbox_cookie_path() {
+    $script = str_replace('\\', '/', dirname(isset($_SERVER['SCRIPT_NAME']) ? $_SERVER['SCRIPT_NAME'] : '/'));
+    $script = rtrim($script, '/');
+    if ($script === '' || $script === '.' || $script === '/') return '/api/toolbox/page';
+    return $script . '/api/toolbox/page';
+}
+
+function tc_toolbox_cookie_issue($db, $user) {
+    $days = isset($db['settings']['sessionDays']) ? max(1, (int) $db['settings']['sessionDays']) : 7;
+    $token = tc_jwt_sign(array(
+        'scope' => 'toolboxpage',
+        'sub' => (string) $user['id'],
+        'tv' => isset($user['tv']) ? (int) $user['tv'] : 0,
+        'ep' => isset($db['settings']['authEpoch']) ? max(1, (int) $db['settings']['authEpoch']) : 1,
+        'exp' => tc_now() + $days * 24 * 3600 * 1000,
+    ));
+    $opts = array(
+        'expires' => time() + $days * 24 * 3600,
+        'path' => tc_toolbox_cookie_path(),
+        'httponly' => true,
+        'samesite' => 'Lax',
+    );
+    if (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') $opts['secure'] = true;
+    @setcookie(TC_TOOLBOX_COOKIE, $token, $opts);
+}
+
+// 校验工具箱页面 Cookie,返回用户 ID(无效返回 '')
+function tc_toolbox_cookie_uid($db) {
+    $raw = isset($_COOKIE[TC_TOOLBOX_COOKIE]) ? (string) $_COOKIE[TC_TOOLBOX_COOKIE] : '';
+    if ($raw === '') return '';
+    $payload = tc_jwt_verify($raw);
+    if (!$payload || !isset($payload['scope']) || (string) $payload['scope'] !== 'toolboxpage') return '';
+    if (empty($payload['sub']) || empty($payload['exp']) || $payload['exp'] < tc_now()) return '';
+    // 失效规则与会话令牌一致:改密码/重置会话(tv)、全站会话纪元(authEpoch)都会让它作废
+    $epoch = isset($db['settings']['authEpoch']) ? (int) $db['settings']['authEpoch'] : 1;
+    $payloadEpoch = isset($payload['ep']) ? (int) $payload['ep'] : 1;
+    if ($payloadEpoch !== $epoch) return '';
+    foreach ($db['users'] as $u) {
+        if ((string) $u['id'] !== (string) $payload['sub']) continue;
+        $tv = isset($u['tv']) ? (int) $u['tv'] : 0;
+        $ptv = isset($payload['tv']) ? (int) $payload['tv'] : 0;
+        return $ptv === $tv ? (string) $u['id'] : '';
+    }
+    return '';
+}
+
+function tc_toolbox_cookie_sync($db, $user) {
+    if (headers_sent()) return;
+    if (tc_toolbox_cookie_uid($db) === (string) $user['id']) return;
+    tc_toolbox_cookie_issue($db, $user);
+}
+
+function tc_toolbox_cookie_clear() {
+    if (headers_sent()) return;
+    @setcookie(TC_TOOLBOX_COOKIE, '', array(
+        'expires' => time() - 3600,
+        'path' => tc_toolbox_cookie_path(),
+        'httponly' => true,
+        'samesite' => 'Lax',
+    ));
+}
 // 该用户已用附件字节数(含 .bin 数据文件)
 function tc_note_user_usage($userId) {
     $dir = tc_note_user_dir($userId, false);
@@ -5238,6 +5318,238 @@ function tc_api_notes_save() {
         tc_set_notes($db, $user['id'], $doc);
         tc_json(200, array('ok' => true, 'revision' => tc_notes_revision_of($db, $user['id'])));
     });
+}
+
+// ============ 在线工具箱(/api/sync/toolbox + /api/toolbox/page) ============
+// 用户把自写的 HTML 单页存进自己的工具箱,随时打开运行。同步模型与笔记完全同构:
+// 整份文档 + 乐观并发修订号(baseRevision),冲突时 409 带回云端文档。
+//
+// 安全模型(改动本段前必读)——
+// 存进来的 HTML **服务端一个字节都不清洗**:脚本、表单、内联样式正是这类小工具的正当
+// 用法,清洗会把工具箱变成只能摆样子的残废。所以隔离不能靠改写内容,只能靠「文档必须
+// 落在不透明源里」这一条,前端两处入口都是这么做的:
+//   · 面板内预览/试跑:iframe 用 srcdoc 注入 + sandbox(不带 allow-same-origin);
+//   · 「在新标签页打开」:走本节的 tc_api_toolbox_page(),响应头带 CSP `sandbox`。
+// 两条路都不给 allow-same-origin,也不给 allow-popups-to-escape-sandbox —— 工具因此既
+// 读不到 localStorage 里的 oc_token,也无法通过弹窗挣脱沙箱拿到本站登录态。
+// 谁要是给这里加一条「同源直出 HTML」的便捷分支、或去掉任一处的 sandbox,就等于把本站
+// 的账户令牌交给任意一份从别处粘贴进来的 HTML,与在线浏览器 iframe 同一条红线。
+
+// 工具箱功能可用性:总开关 × 访问级别(见 lib/features.php)。
+function tc_toolbox_feature_guard($db, $user = null) {
+    if ($user === null) $user = tc_require_auth($db);
+    if (!tc_feature_allowed($db, $user, 'toolbox')) tc_fail(403, '本站未开放在线工具箱功能，或你的账号没有使用权限');
+    return $user;
+}
+
+function tc_toolbox_of($db, $userId) {
+    $map = tc_assoc(isset($db['userToolbox']) ? $db['userToolbox'] : array());
+    $doc = isset($map[$userId]) && is_array($map[$userId]) ? $map[$userId] : array();
+    return array(
+        'items' => isset($doc['items']) && is_array($doc['items']) ? $doc['items'] : array(),
+        // 墓碑:防止别的设备用旧副本把已删除的工具合并回来(与笔记同机制)
+        'tombs' => tc_assoc(isset($doc['tombs']) ? $doc['tombs'] : array()),
+    );
+}
+function tc_toolbox_revision_of($db, $userId) {
+    $map = tc_assoc(isset($db['userToolboxRevisions']) ? $db['userToolboxRevisions'] : array());
+    return isset($map[$userId]) ? (int) $map[$userId] : 0;
+}
+function tc_bump_toolbox_revision(&$db, $userId) {
+    $revs = tc_assoc(isset($db['userToolboxRevisions']) ? $db['userToolboxRevisions'] : array());
+    $revs[$userId] = tc_toolbox_revision_of($db, $userId) + 1;
+    $db['userToolboxRevisions'] = tc_object_map($revs);
+}
+function tc_set_toolbox(&$db, $userId, $doc) {
+    $map = tc_assoc(isset($db['userToolbox']) ? $db['userToolbox'] : array());
+    $map[$userId] = $doc;
+    $db['userToolbox'] = tc_object_map($map);
+    tc_bump_toolbox_revision($db, $userId);
+}
+// 注销/删除用户时清理工具箱(硬删与软删共用)
+function tc_drop_user_toolbox(&$db, $id) {
+    $map = tc_assoc(isset($db['userToolbox']) ? $db['userToolbox'] : array());
+    unset($map[$id]);
+    $db['userToolbox'] = tc_object_map($map);
+    $revs = tc_assoc(isset($db['userToolboxRevisions']) ? $db['userToolboxRevisions'] : array());
+    unset($revs[$id]);
+    $db['userToolboxRevisions'] = tc_object_map($revs);
+}
+
+// 工具 id 来自客户端,只留安全字符(它会进 URL 与签名)
+function tc_toolbox_item_id($raw) {
+    return substr(preg_replace('/[^A-Za-z0-9_-]/', '', (string) $raw), 0, 64);
+}
+
+function tc_sanitize_toolbox_row($it) {
+    if (!is_array($it)) return null;
+    $id = tc_toolbox_item_id(isset($it['id']) ? $it['id'] : '');
+    if ($id === '') return null;
+    $title = trim((string) (isset($it['title']) ? $it['title'] : ''));
+    if ($title === '') $title = '未命名工具';
+    // HTML 原样保存,只做两件事:①修正非法 UTF-8(否则 tc_json_encode 会整体失败,
+    // 用户存进去的东西全丢);②按单条上限报错而不是截断(截断会默默毁掉页面)。
+    $html = tc_utf8_clean((string) (isset($it['html']) ? $it['html'] : ''));
+    if (strlen($html) > TC_TOOLBOX_MAX_HTML) {
+        tc_fail(413, '单个工具的 HTML 超过 ' . TC_TOOLBOX_MAX_HTML . ' 字符上限，请拆小或压缩后再保存');
+    }
+    return array(
+        'id' => $id,
+        'title' => tc_utf_cut($title, 60),
+        'html' => $html,
+        'createdAt' => (float) (isset($it['createdAt']) ? $it['createdAt'] : tc_now()),
+        'updatedAt' => (float) (isset($it['updatedAt']) ? $it['updatedAt'] : tc_now()),
+    );
+}
+
+function tc_sanitize_toolbox_doc($raw) {
+    if (!is_array($raw)) $raw = array();
+    $items = array();
+    $seen = array();
+    $total = 0;
+    $list = isset($raw['items']) && is_array($raw['items']) ? $raw['items'] : array();
+    foreach ($list as $it) {
+        $row = tc_sanitize_toolbox_row($it);
+        if ($row === null || isset($seen[$row['id']])) continue;
+        $seen[$row['id']] = true;
+        $total += strlen($row['html']);
+        $items[] = $row;
+        // 条数与总量都按上限**报错**,不静默丢弃:工具箱是用户自己点名要留的东西,
+        // 悄悄少一个比明确拒绝更让人摸不着头脑。先判再入列,保证不会「加了一半」。
+        if (count($items) > TC_TOOLBOX_MAX_ITEMS) {
+            tc_fail(413, '工具数量超过 ' . TC_TOOLBOX_MAX_ITEMS . ' 个上限，请先删除一些');
+        }
+        if ($total > TC_TOOLBOX_MAX_TOTAL) {
+            tc_fail(413, '工具箱总大小超过上限，请删除或精简部分工具');
+        }
+    }
+    // 墓碑只保留「确实不在列表里」的 id,并限量。
+    // 这里认 stdClass 也认数组:整份文档在「下发 → 客户端 → 推回」之间会各过一次
+    // JSON 编解码,而 json_decode 不带 assoc 时 map 是对象。多认一种形态,免得某个
+    // 调用点忘了 assoc 就把整份墓碑静默丢掉(丢墓碑 = 删除会被别的设备撤销)。
+    $tombs = array();
+    $rawTombs = isset($raw['tombs']) ? $raw['tombs'] : array();
+    if ($rawTombs instanceof stdClass) $rawTombs = (array) $rawTombs;
+    if (!is_array($rawTombs)) $rawTombs = array();
+    foreach (array_slice($rawTombs, 0, 500, true) as $tid => $ts) {
+        $tid = tc_toolbox_item_id($tid);
+        if ($tid === '' || isset($seen[$tid])) continue;
+        $tombs[$tid] = (float) $ts;
+    }
+    return array('items' => $items, 'tombs' => $tombs);
+}
+
+// 工具页面地址的签名。只证明「链接是我们发的」,不代表有权访问 ——
+// 真正的鉴权在 tc_api_toolbox_page() 里按属主判。
+function tc_toolbox_page_token($id) {
+    return substr(hash_hmac('sha256', 'toolbox:' . (string) $id, tc_secret()), 0, 24);
+}
+function tc_toolbox_page_url($id) {
+    return '/api/toolbox/page?id=' . rawurlencode((string) $id) . '&s=' . tc_toolbox_page_token($id);
+}
+// 下发用投影:给每个工具带上签名后的页面地址(签名在服务端算,不交给客户端拼)。
+// 客户端推回文档时多带的 pageUrl 会被 tc_sanitize_toolbox_row 丢掉 —— 它按字段白名单重建。
+function tc_toolbox_public_doc($db, $userId) {
+    $doc = tc_toolbox_of($db, $userId);
+    foreach ($doc['items'] as &$it) $it['pageUrl'] = tc_toolbox_page_url($it['id']);
+    unset($it);
+    // 墓碑必须编码成 JSON 对象:空的 PHP map 用数组发出去会变成 `[]`,而前端把它当
+    // 普通对象用看不出区别(Array 也是 object),但 JSON.stringify 会丢掉数组上的
+    // 非下标属性 —— 于是「删除」在这一端被静默吞掉,工具下次又被别处的旧副本合并回来。
+    // 与笔记/设置的 map 字段同一个坑,所以这里显式转对象。
+    $doc['tombs'] = tc_object_map($doc['tombs']);
+    return $doc;
+}
+
+// GET /api/sync/toolbox:整份文档
+function tc_api_toolbox_get() {
+    tc_with_db(false, function ($db) {
+        $user = tc_toolbox_feature_guard($db);
+        tc_json(200, array(
+            'doc' => tc_toolbox_public_doc($db, $user['id']),
+            'revision' => tc_toolbox_revision_of($db, $user['id']),
+        ));
+    });
+}
+
+// POST /api/sync/toolbox:整文档推送(baseRevision 乐观并发;冲突时 409 带回云端文档)
+function tc_api_toolbox_save() {
+    tc_with_db(true, function (&$db) {
+        $user = tc_toolbox_feature_guard($db);
+        if (!tc_rate_limit_check('tboxsync:' . $user['id'], 60)) {
+            tc_fail(429, '同步过于频繁，请稍后再试');
+        }
+        $b = tc_read_json_body(8 * 1024 * 1024);
+        $current = tc_toolbox_revision_of($db, $user['id']);
+        $base = isset($b['baseRevision']) ? (int) $b['baseRevision'] : $current;
+        if ($base !== $current) {
+            tc_json(409, array(
+                'error' => array('message' => '工具箱已在其他页面更新'),
+                'doc' => tc_toolbox_public_doc($db, $user['id']),
+                'revision' => $current,
+            ));
+        }
+        $doc = tc_sanitize_toolbox_doc(isset($b['doc']) ? $b['doc'] : array());
+        tc_set_toolbox($db, $user['id'], $doc);
+        // 回带落库后的文档:客户端本地拼出来的那几条没有 pageUrl(那是服务端算的签名地址),
+        // 不回带的话「刚存完就点在新标签页打开」会因为拿不到地址而静默失败,非得刷新一次
+        // 面板才行。顺带回传服务端清洗/截断后的真身,列表显示的就是真正存下来的东西。
+        tc_json(200, array(
+            'ok' => true,
+            'revision' => tc_toolbox_revision_of($db, $user['id']),
+            'doc' => tc_toolbox_public_doc($db, $user['id']),
+        ));
+    });
+}
+
+// GET /api/toolbox/page?id=<id>&s=<签名>
+// 把用户存的 HTML 原样吐出,但**响应头必须先把文档变成不透明源**,否则它就是本站源内
+// 一个可执行的网页:能读 localStorage.oc_token、能带着登录态调本站任意接口。
+// 注意 index.php 开头的 tc_send_cors() 发的是全局 `X-Frame-Options: DENY` +
+// CSP `frame-ancestors 'none'`,下面两行是覆盖(与 lib/web.php 的 tc_web_serve 同一处理)。
+function tc_api_toolbox_page() {
+    $q = tc_query();
+    $id = tc_toolbox_item_id(isset($q['id']) ? $q['id'] : '');
+    $sig = (string) (isset($q['s']) ? $q['s'] : '');
+    if ($id === '' || $sig === '' || !hash_equals(tc_toolbox_page_token($id), $sig)) {
+        http_response_code(403);
+        header('Content-Type: text/plain; charset=utf-8');
+        echo '签名无效';
+        exit;
+    }
+    // 签名只说明「链接是本站发的」,不代表「你有权看」:这里再按属主判一次。
+    // 未登录、或登录的是别人,一律 404,不暴露「这个 id 存在」。
+    $html = null;
+    tc_with_db(false, function ($db) use (&$html, $id) {
+        $me = tc_auth_user($db);
+        $uid = $me ? (string) $me['id'] : '';
+        if ($uid === '') $uid = tc_toolbox_cookie_uid($db);   // 页面导航带不了 Authorization 头
+        if ($uid === '') return;
+        $doc = tc_toolbox_of($db, $uid);
+        foreach ($doc['items'] as $it) {
+            if ((string) $it['id'] === $id) { $html = (string) $it['html']; break; }
+        }
+    });
+    if ($html === null) {
+        http_response_code(404);
+        header('Content-Type: text/plain; charset=utf-8');
+        echo '工具不存在';
+        exit;
+    }
+    header('Content-Type: text/html; charset=utf-8');
+    header('X-Frame-Options: SAMEORIGIN');
+    // 隔离本体:CSP `sandbox` 让这份文档成为**不透明源**(即使被直接打开也一样),
+    // 没有 allow-same-origin 就读不到本站存储与 Cookie,没有 allow-popups-to-escape-sandbox
+    // 就无法靠弹窗挣脱。放行 scripts/forms/modals/popups 让工具能跑自己的交互。
+    // 其余来源放开(与在线浏览器同一口径):里面的网络请求由用户自己承担,拿不到本站身份。
+    header("Content-Security-Policy: default-src * data: blob: 'unsafe-inline' 'unsafe-eval'; frame-ancestors 'self'; sandbox allow-scripts allow-forms allow-modals allow-popups");
+    header('X-Content-Type-Options: nosniff');
+    header('Referrer-Policy: no-referrer');
+    // 用户内容不进共享缓存:同一台机器上换个人登录不该看到上一位的工具
+    header('Cache-Control: no-store, must-revalidate');
+    header('Content-Length: ' . strlen($html));
+    echo $html;
+    exit;
 }
 
 // ============ 用户设置云同步(/api/sync/settings) ============
