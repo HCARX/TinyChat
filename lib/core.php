@@ -6,7 +6,7 @@ if (!defined('TC_ROOT')) {
     define('TC_ROOT', dirname(__DIR__));
 }
 
-define('TC_VERSION', '2.0.143');
+define('TC_VERSION', '2.0.145');
 // 单篇笔记正文上限(字符)。超出时接口明确报错而不是静默截断。
 define('TC_NOTE_MAX_CHARS', 500000);
 // 敏感词库上限(去重后的条数)。达到上限后新增词条被丢弃,单个词条本身不截断。
@@ -18,6 +18,14 @@ define('TC_MODERATION_MAX_WORDS', 50000);
 define('TC_TOOLBOX_MAX_ITEMS', 50);
 define('TC_TOOLBOX_MAX_HTML', 200000);
 define('TC_TOOLBOX_MAX_TOTAL', 4000000);
+// 分类上限(用户自建分类与系统分类各算一份)与分类名长度;系统工具总数另设上限,
+// 它与 TC_TOOLBOX_MAX_ITEMS 是两回事:前者是「后台给所有人发的」,后者是「自己攒的」。
+define('TC_TOOLBOX_MAX_CATS', 50);
+define('TC_TOOLBOX_CAT_NAME_MAX', 20);
+define('TC_TOOLBOX_MAX_SYS_ITEMS', 200);
+// 系统工具箱整份文档的字符上限。它整键存成一行,给到 8MB 留足空间,
+// 同时保证 JSON 请求体(转义后还会膨胀)仍在后台接口 16MB 的读入上限之内。
+define('TC_TOOLBOX_MAX_SYS_TOTAL', 8000000);
 // 工具打开时用的 Cookie(见 lib/api.php 的 tc_toolbox_cookie_*):
 // 页面是在 iframe/新标签页里被**浏览器直接导航**的,带不了 Authorization 头,
 // 只能靠 Cookie 认人。作用域与笔记附件 Cookie 分开,便于各自失效。
@@ -1448,6 +1456,11 @@ function tc_empty_db() {
         'userToolbox' => new stdClass(),
         // 工具箱文档乐观并发修订号:{userId: int},语义与 userNoteRevisions 一致
         'userToolboxRevisions' => new stdClass(),
+        // 系统工具箱(所有人共用、由后台维护的那份):{cats:[{id,name}], items:[{id,cat,title,html,...}]}。
+        // 量小(10 套内置工具约 30KB),不按用户拆行,整键一行存,与 assistants 等同类。
+        // null 表示「还没种过」,由 tc_seed_system_toolbox 在首次运行时填入内置内容;
+        // 种过之后(含被管理员删空)一律用库里的值,不会再塞回来。
+        'sysToolbox' => null,
         // 用户设置(界面偏好/外观/群聊配置/生成参数等):按用户拆成 uset:{uid} 行,
         // 值为整份设置文档(含逐键更新时间戳),换设备登录即可恢复,无需重新设置
         'userSettings' => new stdClass(),
@@ -1861,6 +1874,24 @@ function tc_default_register_group($db) {
     return null;
 }
 
+// 系统工具箱种子:首次运行时把内置工具落库,之后完全交给后台增删改。
+//
+// 标记键只挡「重复种子」这一件事:管理员把内置工具全删了(存成 {cats:[],items:[]})也是
+// 合法状态,标记已置位,下次不会再塞回来 —— 否则删了又长出来,没人能真正清空。
+// 返回本次是否动过库(补了内容或补了标记,相对 store 里的状态都算变更):
+// 调用方(引导流程)据此决定要不要立刻落库,见 tc_migrate_db 里的说明。
+function tc_seed_system_toolbox(&$db) {
+    if (!empty($db['toolboxSysSeeded'])) return false;
+    $cur = isset($db['sysToolbox']) ? $db['sysToolbox'] : null;
+    // 已经是合法文档(哪怕是空的 {cats:[],items:[]})就不动它,只补标记
+    if (!is_array($cur) || !$cur) {
+        require_once __DIR__ . '/toolbox-default.php';
+        $db['sysToolbox'] = tc_toolbox_default_system();
+    }
+    $db['toolboxSysSeeded'] = true;
+    return true;
+}
+
 function tc_migrate_db($raw) {
     $base = tc_empty_db();
     $db = array_merge($base, is_array($raw) ? $raw : array());
@@ -1944,6 +1975,13 @@ function tc_migrate_db($raw) {
         }
         unset($db['settings']['maxOutputTokens']);
         $db['metaMigrated119'] = true;
+    }
+    // 内置系统工具箱(v2.0.145):首次运行把 10 套常用小工具种进 sysToolbox(见 lib/toolbox-default.php)。
+    // 迁移是在**读**请求里跑的,而读请求不落库(tc_db_commit 对读请求直接返回),只在这里改内存的话
+    // 种子永远进不了库、每次请求都要重新装配一遍。所以把「动过库」记到全局变量上,由同样跑在
+    // 写事务里的引导流程(tc_bootstrap_maybe)顺手写下去。
+    if (tc_seed_system_toolbox($db)) {
+        $GLOBALS['_tc_db_seed_dirty'] = true;
     }
     $db['version'] = TC_DB_VERSION;
     foreach (array('users', 'providers', 'userGroups', 'accessRules', 'assistantCategories', 'assistants', 'packages', 'redemptionCodes', 'quotaLedger', 'inviteCodes') as $k) {

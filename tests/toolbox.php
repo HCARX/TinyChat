@@ -1,9 +1,10 @@
 <?php
 /**
  * 在线工具箱自检: php tests/toolbox.php
- * 覆盖: 数据行的读写与修订号、文档清洗(去重/字段白名单/标题回落)、数量与体积上限
+ * 覆盖: 数据行的读写与修订号、文档清洗(去重/字段白名单/标题回落/分类)、数量与体积上限
  *       (超出必须**明确报错**而不是静默截断)、墓碑语义、注销清理、
- *       页面地址签名、功能开关(总开关 × 访问级别)、以及页面端点的安全响应头。
+ *       页面地址签名(用户与系统两套命名空间)、功能开关(总开关 × 访问级别)、
+ *       页面端点的安全响应头、系统工具箱(种子一次、后台增删改、内置工具契约)。
  * 退出码非 0 表示失败,供 CI 使用。
  */
 $root = dirname(__DIR__);
@@ -30,7 +31,7 @@ function hasnt($m, $hay, $needle) {
 
 // ---------- 1) 数据行读写与修订号 ----------
 $db = array('userToolbox' => new stdClass(), 'userToolboxRevisions' => new stdClass());
-eq('空库读出空文档', tc_toolbox_of($db, 'u1'), array('items' => array(), 'tombs' => array()));
+eq('空库读出空文档', tc_toolbox_of($db, 'u1'), array('cats' => array(), 'items' => array(), 'tombs' => array()));
 eq('初始修订号为 0', tc_toolbox_revision_of($db, 'u1'), 0);
 
 $doc = array('items' => array(array('id' => 'a1', 'title' => '计算器', 'html' => '<h1>x</h1>')), 'tombs' => array());
@@ -59,7 +60,7 @@ $clean = tc_sanitize_toolbox_doc(array(
 eq('空标题回落为「未命名工具」', $clean['items'][0]['title'], '未命名工具');
 eq('重复 id 只保留第一条', count($clean['items']), 3);
 eq('id 只留安全字符(路径字符被剔)', $clean['items'][1]['id'], 'etcpasswd');
-eq('未知字段被丢弃(白名单重建)', array_keys($clean['items'][2]), array('id', 'title', 'html', 'createdAt', 'updatedAt'));
+eq('未知字段被丢弃(白名单重建)', array_keys($clean['items'][2]), array('id', 'cat', 'title', 'html', 'createdAt', 'updatedAt'));
 eq('畸形条目被跳过', in_array('not-an-array', array_column($clean['items'], 'html'), true), false);
 eq('已存在的 id 不进墓碑', isset($clean['tombs']['a1']), false);
 eq('墓碑保留真正删除的 id', isset($clean['tombs']['gone']), true);
@@ -96,6 +97,11 @@ if ($case === "items") {
     $items = array();
     for ($i = 0; $i < 100; $i++) $items[] = array("id" => "t" . $i, "title" => "n", "html" => str_repeat("a", $per));
     tc_sanitize_toolbox_doc(array("items" => $items));
+} elseif ($case === "sysitems") {
+    // 系统工具箱用另一套额度(第 2/3 个参数),越界同样必须明确报错
+    $items = array();
+    for ($i = 0; $i <= 3; $i++) $items[] = array("id" => "t" . $i, "title" => "n", "html" => "x");
+    tc_sanitize_toolbox_doc(array("items" => $items), 3, TC_TOOLBOX_MAX_SYS_TOTAL);
 } elseif ($case === "cfg") {
     // tc_api_public_config() 走 tc_json() 直接 exit,只能在子进程里读它吐出来的 JSON
     tc_api_public_config(array(
@@ -140,7 +146,7 @@ has('下发投影带签名后的 pageUrl', $pub['items'][0]['pageUrl'], '&s=');
 $wire = tc_json_encode($pub);
 has('墓碑在下发 JSON 里是对象而不是数组(空的也得是 {})', $wire, '"tombs":{}');
 $round = tc_sanitize_toolbox_doc(json_decode($wire, true));
-eq('推回的文档丢掉 pageUrl(不落库)', array_keys($round['items'][0]), array('id', 'title', 'html', 'createdAt', 'updatedAt'));
+eq('推回的文档丢掉 pageUrl(不落库)', array_keys($round['items'][0]), array('id', 'cat', 'title', 'html', 'createdAt', 'updatedAt'));
 
 // 墓碑往返:这是「删掉的工具过一会儿又回来了」那个 bug 的根源 —— 空 map 被发成 [] 后,
 // 前端挂上去的属性会被 JSON.stringify 丢掉,删除动作实际没推上去。
@@ -181,17 +187,40 @@ eq('公共配置里能解析出 JSON', is_array($cfg), true);
 eq('公共配置下发 toolboxEnabled', isset($cfg['toolboxEnabled']) && $cfg['toolboxEnabled'] === true, true);
 
 // ---------- 7) 页面端点的安全响应头(源码级契约,与 tests/toolbox-sandbox.js 呼应)----------
+// 响应头集中在一个共用函数里:用户自存与系统工具两条路都走它。分头写迟早会各自漂移,
+// 而漂移的那一次就是把本站登录态交给页面里的脚本 —— 所以这里钉住「页面函数必须调用它」
+// 并且「它带着全套隔离头」两件事。
 $apiSrc = (string) @file_get_contents($root . '/lib/api.php');
-$at = strpos($apiSrc, 'function tc_api_toolbox_page');
-$body = $at !== false ? substr($apiSrc, $at, strpos($apiSrc, "\n}", $at) - $at) : '';
+$fnBody = function ($src, $name) {
+    $at = strpos($src, 'function ' . $name);
+    if ($at === false) return '';
+    $end = strpos($src, "\n}", $at);
+    return $end === false ? '' : substr($src, $at, $end - $at);
+};
+$serve = $fnBody($apiSrc, 'tc_toolbox_serve_html');
+$body = $fnBody($apiSrc, 'tc_api_toolbox_page');
+if ($serve === '') no('找得到 tc_toolbox_serve_html');
+else {
+    has('隔离响应头覆盖 X-Frame-Options 为 SAMEORIGIN', $serve, 'X-Frame-Options: SAMEORIGIN');
+    has('隔离响应头带 CSP sandbox', $serve, 'sandbox allow-scripts');
+    // 只在 CSP 那一行里判「不许有」:函数里还有解释这些限制的注释,拿整个函数体做判据
+    // 会被自己写的说明文字绊倒(注释里提到 allow-same-origin 不等于真的放行了它)。
+    $cspLine = '';
+    if (preg_match('/Content-Security-Policy:[^\n]*/', $serve, $m)) $cspLine = $m[0];
+    has('取到了 CSP 头那一行', $cspLine, 'sandbox allow-scripts');
+    hasnt('CSP 不带 allow-same-origin', $cspLine, 'allow-same-origin');
+    hasnt('CSP 不带 allow-popups-to-escape-sandbox', $cspLine, 'allow-popups-to-escape-sandbox');
+    hasnt('CSP 不带 allow-top-navigation', $cspLine, 'allow-top-navigation');
+    has('CSP 仍限定 frame-ancestors 为 self', $cspLine, "frame-ancestors 'self'");
+    has('隔离响应头带 nosniff', $serve, 'X-Content-Type-Options: nosniff');
+    has('隔离响应头 no-store', $serve, 'no-store');
+}
 if ($body === '') no('找得到 tc_api_toolbox_page');
 else {
-    has('页面端点覆盖 X-Frame-Options 为 SAMEORIGIN', $body, 'X-Frame-Options: SAMEORIGIN');
-    has('页面端点带 CSP sandbox', $body, 'sandbox allow-scripts');
-    hasnt('CSP sandbox 不带 allow-same-origin', $body, 'sandbox allow-scripts allow-same-origin');
-    has('页面端点带 nosniff', $body, 'X-Content-Type-Options: nosniff');
-    has('页面端点 no-store', $body, 'no-store');
+    has('页面端点走共用的隔离响应头函数', $body, 'tc_toolbox_serve_html(');
     has('按属主判权(不只看签名)', $body, 'tc_toolbox_cookie_uid(');
+    has('功能开关也拦一次(关掉后签名地址不能再跑)', $body, "tc_feature_allowed(\$db, \$me, 'toolbox')");
+    has('系统工具分支走独立签名命名空间', $body, "\$isSys");
 }
 // 注销/软删两条路径都要清掉箱子,否则同名重注册会捡到上一个人的工具
 has('注销清理接进硬删路径', $apiSrc, 'tc_drop_user_toolbox($db, $id)');
@@ -210,6 +239,151 @@ has('加载器回填总开关', $adminJs, "s.toolboxEnabled !== false");
 has('保存分支提交 toolboxEnabled', $adminJs, 'toolboxEnabled:');
 has('保存分支带上可见范围', $adminJs, "readFeatureAccess('toolbox')");
 has('总览把工具箱算进去', $adminJs, 'toolbox: s.toolboxEnabled !== false');
+
+// ---------- 9) 系统工具箱(全员共用,后台维护) ----------
+// 分类清洗:去重 / 去空名 / 截断到上限,id 与工具 id 同规则
+$cats = tc_sanitize_toolbox_cats(array(
+    array('id' => 'enc', 'name' => '编码转换'),
+    array('id' => 'enc', 'name' => '重复 id 只留第一条'),
+    array('id' => 'bad id!', 'name' => 'id 里的非法字符被剔'),
+    array('id' => 'noname', 'name' => '   '),
+    array('name' => '没有 id'),
+    'not-an-array',
+));
+eq('分类去重', count($cats), 2);
+eq('分类 id 只留安全字符', $cats[1]['id'], 'badid');
+eq('没有名字的分类被丢弃', in_array('noname', array_column($cats, 'id'), true), false);
+eq('分类名截到上限长度', mb_strlen(tc_sanitize_toolbox_cats(array(array('id' => 'x', 'name' => str_repeat('名', 200))))[0]['name']), TC_TOOLBOX_CAT_NAME_MAX);
+$manyCats = array();
+for ($i = 0; $i <= TC_TOOLBOX_MAX_CATS; $i++) $manyCats[] = array('id' => 'c' . $i, 'name' => 'n' . $i);
+eq('分类超上限按截断处理(不让整次保存失败)', count(tc_sanitize_toolbox_cats($manyCats)), TC_TOOLBOX_MAX_CATS);
+
+// 内置系统工具箱:10 套工具 / 5 个分类,且每一套都是完整可跑的整页
+// (平时由 tc_seed_system_toolbox 惰性 require,这里直接引进来单测这批模板)
+require_once $root . '/lib/toolbox-default.php';
+$sys = tc_toolbox_default_system();
+eq('内置工具 10 套', count($sys['items']), 10);
+eq('内置分类 5 个', count($sys['cats']), 5);
+$badTool = '';
+foreach ($sys['items'] as $it) {
+    $h = (string) $it['html'];
+    if (stripos($h, '<!doctype html>') !== 0) { $badTool = $it['id'] . ' 不是完整整页'; break; }
+    if (strpos($h, '<script>') === false) { $badTool = $it['id'] . ' 没有脚本(工具会是死的)'; break; }
+    if (strlen($h) > TC_TOOLBOX_MAX_HTML) { $badTool = $it['id'] . ' 超过单条上限'; break; }
+    // 沙箱里没有同源身份:碰 localStorage / document.cookie 会在用户面前直接抛错
+    if (preg_match('/localStorage|document\.cookie|sessionStorage/', $h)) { $badTool = $it['id'] . ' 依赖沙箱里不可用的存储'; break; }
+    // 内联外链会在断网/内网环境卡住首屏,内置工具一律自带样式与脚本
+    if (preg_match('#(src|href)\s*=\s*["\']https?://#i', $h)) { $badTool = $it['id'] . ' 引用了外部资源'; break; }
+}
+eq('每套内置工具都是自洽的整页(完整 doctype/有脚本/不超限/不依赖存储/不引外链)', $badTool, '');
+$sysTitles = array_column($sys['items'], 'title');
+eq('内置工具包含 Base64 编解码', in_array('Base64 编解码', $sysTitles, true), true);
+eq('内置工具包含 UUID 生成', in_array('UUID 生成', $sysTitles, true), true);
+$sysCats = array_column($sys['cats'], 'id');
+$dangling = array();
+foreach ($sys['items'] as $it) if (!in_array($it['cat'], $sysCats, true)) $dangling[] = $it['id'];
+eq('内置工具的归属都能落在内置分类里', $dangling, array());
+
+// 种子:只跑一次;管理员删光之后不会再塞回来
+$dbSeed = array('sysToolbox' => null);
+eq('首次运行会装入内置工具', tc_seed_system_toolbox($dbSeed), true);
+eq('装进来的是 10 套', count($dbSeed['sysToolbox']['items']), 10);
+eq('第二次运行不再改动', tc_seed_system_toolbox($dbSeed), false);
+$dbEmpty = array('sysToolbox' => array('cats' => array(), 'items' => array()), 'toolboxSysSeeded' => true);
+eq('管理员把系统工具删光后不会被重新塞回', tc_seed_system_toolbox($dbEmpty), false);
+eq('删光后的空文档原样保持', $dbEmpty['sysToolbox']['items'], array());
+$dbEmpty2 = array('sysToolbox' => array('cats' => array(), 'items' => array()));
+tc_seed_system_toolbox($dbEmpty2);
+eq('已有空文档时只补标记、不填内容', $dbEmpty2['sysToolbox']['items'], array());
+has('迁移里调的种子函数', $coreSrc, 'tc_seed_system_toolbox($db)');
+has('引导流程把种子落库(读请求不落库,不写下去就每请求重装一遍)', (string) @file_get_contents($root . '/index.php'), '_tc_db_seed_dirty');
+
+// 库里有 sysToolbox 时用它;为 null(还没种)时用内置默认值兜底
+$dbSys = array('sysToolbox' => array('cats' => array(array('id' => 'c1', 'name' => '我的分类')), 'items' => array(array('id' => 'only', 'cat' => 'c1', 'title' => '只有这一个', 'html' => '<p>x</p>'))));
+eq('库里有系统工具就用库里的', count(tc_sys_toolbox_of($dbSys)['items']), 1);
+eq('库里为 null 时用内置默认值兜底(装好第一屏不会是空的)', count(tc_sys_toolbox_of(array('sysToolbox' => null))['items']), 10);
+
+// 页面地址:两套命名空间必须互不通用,否则用户工具页的合法链接能拿去读同名系统工具
+if (tc_toolbox_page_token('base64', true) !== tc_toolbox_page_token('base64', false)) ok('系统工具与用户工具签名命名空间分开'); else no('两种工具的签名相同(可互相顶替)');
+eq('用户工具的签名不受新命名空间影响(旧链接仍有效)', tc_toolbox_page_token('abc'), $t1);
+has('系统工具地址带 sys=1', tc_toolbox_page_url('base64', true), 'sys=1');
+hasnt('用户工具地址不带 sys', tc_toolbox_page_url('abc'), 'sys=1');
+$sysPub = tc_sys_toolbox_public_doc($dbSys);
+has('系统工具的下发投影带 pageUrl(新标签页打开靠它)', $sysPub['items'][0]['pageUrl'], 'sys=1');
+eq('系统工具文档不带墓碑(单份文档不需要)', isset($sysPub['tombs']), false);
+
+// 系统工具的额度是另一套:上限参数化后可验,越界仍要明确报错
+$three = array();
+for ($i = 0; $i < 3; $i++) $three[] = array('id' => 't' . $i, 'title' => 'n', 'html' => 'x');
+eq('系统工具的数量上限可单独设定', count(tc_sanitize_toolbox_doc(array('items' => $three), 3, TC_TOOLBOX_MAX_SYS_TOTAL)['items']), 3);
+has('系统工具数量超限也明确报错', probe('sysitems'), '上限');
+eq('系统工具总量额度大于用户总额度(它要装下内置那批)', TC_TOOLBOX_MAX_SYS_TOTAL > TC_TOOLBOX_MAX_TOTAL, true);
+
+// 后台接口:路由、鉴权与演示账号的限制(源码级契约)
+$routesSrc = (string) @file_get_contents($root . '/index.php');
+has('注册了后台系统工具箱读接口', $routesSrc, "'#^/api/admin/toolbox\$#', 'tc_api_admin_toolbox_get'");
+has('注册了后台系统工具箱写接口', $routesSrc, "'#^/api/admin/toolbox\$#', 'tc_api_admin_toolbox_save'");
+$getFn = $fnBody($apiSrc, 'tc_api_admin_toolbox_get');
+$saveFn = $fnBody($apiSrc, 'tc_api_admin_toolbox_save');
+has('系统工具箱读接口要管理员', $getFn, 'tc_require_admin($db)');
+has('系统工具箱写接口要管理员', $saveFn, 'tc_require_admin($db)');
+has('系统工具箱写接口拒绝演示账号', $saveFn, "tc_is_demo_user(\$user)");
+has('系统工具箱写接口用更大的额度', $saveFn, 'TC_TOOLBOX_MAX_SYS_ITEMS');
+has('系统工具箱写接口剥掉墓碑', $saveFn, "unset(\$doc['tombs'])");
+has('系统工具箱写接口落库时打上种子标记', $saveFn, "toolboxSysSeeded");
+// 前台同步接口要把系统工具一起下发,否则面板里那一区永远是空的
+has('前台同步接口下发系统工具', $fnBody($apiSrc, 'tc_api_toolbox_get'), 'tc_sys_toolbox_public_doc($db)');
+
+// ---------- 10) 后台系统工具面板接线 ----------
+has('面板里有系统工具容器', $adminHtml, 'id="toolbox-sys-body"');
+has('面板里有保存按钮', $adminHtml, 'id="toolbox-sys-save"');
+has('面板里有重新载入按钮', $adminHtml, 'id="toolbox-sys-reload"');
+has('后台 JS 有系统工具加载器', $adminJs, 'async function loadToolboxSystem');
+has('设置加载器会带上系统工具', $adminJs, 'await loadToolboxSystem()');
+has('后台 JS 提交到后台工具箱接口', $adminJs, "'/api/admin/toolbox'");
+has('保存前从界面读回整份文档', $adminJs, 'readToolboxSystemDoc()');
+has('结构性操作前先收回界面上的编辑', $adminJs, 'syncToolboxSystemFromDom()');
+has('工具 HTML 进 textarea 前做转义(否则会破框)', $adminJs, "escapeHtml(it.html || '')");
+has('分类可新建', $adminJs, 'tboxSysAddCategory');
+has('分类可删除', $adminJs, 'tboxSysDeleteCategory');
+has('工具可新增/删除', $adminJs, 'tboxSysAddItem');
+has('工具有删除按钮', $adminJs, 'tboxSysDeleteItem');
+has('有未保存改动的提示', $adminJs, '有未保存的改动');
+
+// ---------- 11) 前台:自有地址、左上角品牌与返回、分类与系统工具 ----------
+$tboxJs = (string) @file_get_contents($root . '/static/js/toolbox.js');
+has('前台认领 /toolbox 独立地址', $tboxJs, "'/toolbox'");
+has('进入时压入历史(刷新后仍停在这一页)', $tboxJs, "history.pushState({ toolbox: true }, '', '/toolbox')");
+has('关闭时地址回到根路径', $tboxJs, "history.pushState(null, '', '/')");
+has('监听前进后退', $tboxJs, "addEventListener('popstate'");
+has('左上角有品牌 logo(点回对话首页)', $tboxJs, 'id="tb-brand"');
+has('品牌图分深浅两套', $tboxJs, 'brand-logo-dark');
+has('左上角有返回按钮', $tboxJs, 'tb-back-btn');
+has('返回按钮接的是关闭', $tboxJs, "querySelector('[data-act=\"close\"]').addEventListener('click', close)");
+has('列表分了「我的工具」与「系统工具」两区', $tboxJs, '系统工具');
+has('有分类筛选芯片', $tboxJs, 'tb-chip');
+has('有分类管理视图', $tboxJs, 'renderCats');
+has('可以把系统工具加入自己的工具箱', $tboxJs, 'adoptSys');
+has('系统工具只读(不直接改管理员那份)', $tboxJs, 'viewSource');
+$tboxCss = (string) @file_get_contents($root . '/static/css/toolbox.css');
+has('样式里有品牌区', $tboxCss, '.tb-brand');
+has('样式里有分类芯片', $tboxCss, '.tb-chip');
+has('样式里有系统工具卡片区分', $tboxCss, '.tb-card-builtin');
+has('后台系统工具样式挂在 chrome.css(后台专用)', (string) @file_get_contents($root . '/static/css/chrome.css'), '.tbox-sys-item');
+// 预览沙箱:红线仍然只有那一条。判据取 setAttribute 那一行本身 —— 文件里还有解释
+// 这条红线的注释,拿全文判「不许出现 allow-same-origin」会被自己的说明文字绊倒。
+$sbLine = '';
+if (preg_match("/setAttribute\\('sandbox',[^\\n]*/", $tboxJs, $m)) $sbLine = $m[0];
+eq('预览 iframe 的 sandbox 权限集固定(没加任何逃逸项)', $sbLine, "setAttribute('sandbox', 'allow-scripts allow-forms allow-modals allow-popups');");
+has('工具 HTML 只经 srcdoc 属性赋值', $tboxJs, 'frame.srcdoc = S.previewHtml');
+has('系统工具与用户工具走同一个预览函数', $tboxJs, 'function runPreview(kind, id)');
+// Esc 归属:面板挂在 OCUI 的 modal 栈上,而「关栈顶」的监听注册得比本模块早 —— 内层视图
+// 想在 Esc 上退一步就必须在捕获阶段接管,同时放行自己弹的确认框;列表视图放给栈去关。
+has('Esc 在捕获阶段接管(抢在 modal 栈的「关栈顶」之前)', $tboxJs, "document.addEventListener('keydown', onKeydown, true)");
+has('自己弹的确认/输入框打开时不抢 Esc', $tboxJs, '.oc-confirm-mask:not(.hidden)');
+has('列表视图的 Esc 交给 modal 栈', $tboxJs, "if (S.view === 'list') return;");
+has('modal 栈关掉面板后同步模块状态(否则卡在 open,再也打不开)', $tboxJs, 'mask._onClose = () => { if (S.open) doClose(); };');
+has('预览的「返回」回它进来时的地方', $tboxJs, "S.previewFrom = id ? 'list' : 'editor'");
 
 echo "\n" . ($bad ? '✗ 在线工具箱自检失败: ' . $bad . ' 项' : '✓ 在线工具箱自检通过') . "\n";
 exit($bad ? 1 : 0);

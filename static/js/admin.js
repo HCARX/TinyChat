@@ -4919,6 +4919,51 @@ document.addEventListener('click', async (e) => {
     loadImThreads().catch((err) => toast('加载失败: ' + err.message, true));
     return;
   }
+  // ---- 系统工具(全员共用)的增删改 ----
+  if (e.target.closest('#toolbox-sys-save')) { saveToolboxSystem(); return; }
+  if (e.target.closest('#toolbox-sys-reload')) {
+    if (TBOX_SYS.dirty) {
+      const go = async () => {
+        const ok = window.OCUI && window.OCUI.confirm
+          ? await window.OCUI.confirm({ title: '放弃改动', message: '有未保存的改动，重新载入会丢掉它们，确定吗？', danger: true, confirmText: '重新载入' })
+          : window.confirm('有未保存的改动，重新载入会丢掉它们，确定吗？');
+        if (ok) loadToolboxSystem(true);
+      };
+      go();
+    } else {
+      loadToolboxSystem(true);
+    }
+    return;
+  }
+  if (e.target.closest('#tsys-cat-add')) { tboxSysAddCategory(); return; }
+  if (e.target.closest('#tsys-item-add')) { tboxSysAddItem(); return; }
+  const catRen = e.target.closest('[data-tsys-cat-ren]');
+  if (catRen) {
+    const id = catRen.getAttribute('data-tsys-cat-ren');
+    const cur = ((TBOX_SYS.doc.cats || []).find((c) => String(c.id) === String(id)) || {}).name || '';
+    const ask = window.OCUI && window.OCUI.prompt
+      ? window.OCUI.prompt({ title: '重命名分类', value: cur, maxlength: 20, confirmText: '保存' })
+      : Promise.resolve(window.prompt('新分类名称', cur));
+    ask.then((name) => {
+      const v = String(name == null ? '' : name).trim();
+      if (!v || v === cur) return;
+      (TBOX_SYS.doc.cats || []).forEach((c) => { if (String(c.id) === String(id)) c.name = v; });
+      renderToolboxSystem();
+      markTboxSysDirty();
+    });
+    return;
+  }
+  const catDel = e.target.closest('[data-tsys-cat-del]');
+  if (catDel) { tboxSysDeleteCategory(catDel.getAttribute('data-tsys-cat-del')); return; }
+  const itemToggle = e.target.closest('[data-tsys-toggle]');
+  if (itemToggle) {
+    const row = itemToggle.closest('[data-tsys-item]');
+    const tb = row && row.querySelector('.tbox-sys-html');
+    if (tb) tb.classList.toggle('hidden');
+    return;
+  }
+  const itemDel = e.target.closest('[data-tsys-del]');
+  if (itemDel) { tboxSysDeleteItem(itemDel.getAttribute('data-tsys-del')); return; }
 });
 document.addEventListener('keydown', (e) => {
   const toggle = e.target.closest && e.target.closest('#notes-users-toggle');
@@ -5067,6 +5112,236 @@ async function loadToolboxSettings() {
   const s = ((await r.json()) || {}).settings || {};
   if ($('toolbox-enabled')) $('toolbox-enabled').checked = s.toolboxEnabled !== false;
   renderFeatureAccessBlock('toolbox', s);
+  // 系统工具那一卡也一起带上(已加载过就不重复拉,免得把正在编辑的改动冲掉)
+  await loadToolboxSystem();
+}
+
+// ---------- 在线工具箱:系统工具(全员共用,后台增删改) ----------
+// 本地改、整体存:与前台同步同一套「整份文档」模型。逐条保存会在「删除分类」与
+// 「改工具归属」之间留下半保存状态,前台那一刻会看到悬空的归属;整份存没有这个问题。
+// DOM 是这一卡的唯一数据源:保存时从输入框读回,而不是维护一份容易与界面走样的副本。
+const TBOX_SYS = { doc: { cats: [], items: [] }, limits: {}, loaded: false, dirty: false, changed: {} };
+
+function tboxSysUid() {
+  return 's' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+}
+function setTboxSysStatus(msg, isErr) {
+  const el = $('toolbox-sys-status');
+  if (!el) return;
+  el.textContent = msg || '';
+  el.classList.toggle('err', !!isErr);
+}
+function markTboxSysDirty(id) {
+  if (id) TBOX_SYS.changed[String(id)] = true;
+  TBOX_SYS.dirty = true;
+  setTboxSysStatus('有未保存的改动');
+}
+
+async function loadToolboxSystem(force) {
+  if (TBOX_SYS.loaded && !force) return;
+  const host = $('toolbox-sys-body');
+  if (!host) return;
+  try {
+    const r = await api('/api/admin/toolbox');
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error((d.error && d.error.message) || '加载失败');
+    const doc = d.doc || {};
+    TBOX_SYS.doc = {
+      cats: Array.isArray(doc.cats) ? doc.cats : [],
+      items: Array.isArray(doc.items) ? doc.items : [],
+    };
+    TBOX_SYS.limits = d.limits || {};
+    TBOX_SYS.loaded = true;
+    TBOX_SYS.dirty = false;
+    TBOX_SYS.changed = {};
+    renderToolboxSystem();
+  } catch (err) {
+    host.innerHTML = '<p class="muted small">系统工具加载失败：' + escapeHtml(err.message || '') + '</p>';
+  }
+}
+
+function tboxSysCatOptions(selected) {
+  const cats = TBOX_SYS.doc.cats || [];
+  return '<option value="">未分类</option>' + cats.map((c) =>
+    '<option value="' + escapeHtml(c.id) + '"' + (String(c.id) === String(selected || '') ? ' selected' : '') + '>'
+    + escapeHtml(c.name) + '</option>').join('');
+}
+
+function tboxSysRowHtml(it) {
+  const id = escapeHtml(it.id);
+  return '<div class="tbox-sys-item" data-tsys-item="' + id + '"'
+    + ' data-created="' + escapeHtml(it.createdAt || '') + '" data-updated="' + escapeHtml(it.updatedAt || '') + '">'
+    + '<div class="tbox-sys-head">'
+    + '<input class="tbox-sys-title" data-tsys-field="title" type="text" maxlength="60"'
+    + ' value="' + escapeHtml(it.title || '') + '" placeholder="工具名称" autocomplete="off">'
+    + '<select class="tbox-sys-cat" data-tsys-field="cat">' + tboxSysCatOptions(it.cat) + '</select>'
+    + '<button class="btn small" type="button" data-tsys-toggle="' + id + '">源码</button>'
+    + (it.pageUrl ? '<a class="btn small" data-tsys-open target="_blank" rel="noopener" href="' + escapeHtml(apiUrl(it.pageUrl)) + '">打开</a>' : '')
+    + '<button class="btn small danger" type="button" data-tsys-del="' + id + '">删除</button>'
+    + '</div>'
+    // HTML 一律走转义后放进 textarea 的文本节点:直接拼会让工具内容里的 </textarea> 破框,
+    // 那一步等于在后台上执行任意 HTML。工具数据只以「文本」身份进出。
+    + '<textarea class="tbox-sys-html hidden" data-tsys-field="html" spellcheck="false" wrap="off"'
+    + ' placeholder="整个页面的 HTML，可含脚本与样式">' + escapeHtml(it.html || '') + '</textarea>'
+    + '</div>';
+}
+
+function renderToolboxSystem() {
+  const host = $('toolbox-sys-body');
+  if (!host) return;
+  const cats = TBOX_SYS.doc.cats || [];
+  const list = TBOX_SYS.doc.items || [];
+  const max = TBOX_SYS.limits.maxSysItems || 200;
+  host.innerHTML =
+    '<div class="tbox-sys-cats">'
+    + '<span class="muted small">分类：</span>'
+    + (cats.length
+      ? cats.map((c) => '<span class="tbox-sys-chip">' + escapeHtml(c.name)
+        + '<button type="button" data-tsys-cat-ren="' + escapeHtml(c.id) + '" title="重命名">&#9998;</button>'
+        + '<button type="button" data-tsys-cat-del="' + escapeHtml(c.id) + '" title="删除分类">&#215;</button></span>').join('')
+      : '<span class="muted small">（还没有分类，工具都归在「未分类」）</span>')
+    + '<input class="tbox-sys-newcat" id="tsys-cat-new" type="text" placeholder="新分类名称" maxlength="20" autocomplete="off">'
+    + '<button class="btn small" id="tsys-cat-add" type="button">新建分类</button>'
+    + '</div>'
+    + '<div class="tbox-sys-list">'
+    + (list.length ? list.map((it) => tboxSysRowHtml(it)).join('')
+      : '<p class="muted small">还没有系统工具。点下面的「新增系统工具」加一个——前台所有人都会看到它。</p>')
+    + '</div>'
+    + '<div class="tbox-sys-foot">'
+    + '<button class="btn small" id="tsys-item-add" type="button">＋ 新增系统工具</button>'
+    + '<span class="muted small">共 ' + list.length + ' / ' + max + ' 个</span>'
+    + '</div>';
+  // 与后台其它下拉保持同一观感;enhanceSelect 只是隐藏原生 select,value/change 语义不变,
+  // 所以保存时照样 row.querySelector('select').value 读得到。
+  if (window.OC && typeof window.OC.enhanceSelects === 'function') window.OC.enhanceSelects(host);
+  TBOX_SYS.dirty = false;
+  setTboxSysStatus('');
+}
+
+// 从界面读回整份文档。createdAt 沿用首次渲染时的值(服务端只在我们没给的时候才补 now),
+// 有改动的行把 updatedAt 推到当前时间(改动记在 TBOX_SYS.changed 里 —— 结构性操作会重建
+// DOM,行元素上的标记会跟着没掉)。
+function readToolboxSystemDoc() {
+  const host = $('toolbox-sys-body');
+  const items = [];
+  host.querySelectorAll('[data-tsys-item]').forEach((row) => {
+    const id = row.getAttribute('data-tsys-item');
+    const title = String(row.querySelector('[data-tsys-field="title"]').value || '').trim() || '未命名工具';
+    const cat = String(row.querySelector('[data-tsys-field="cat"]').value || '');
+    const html = String(row.querySelector('[data-tsys-field="html"]').value || '');
+    items.push({
+      id: id,
+      cat: cat,
+      title: title,
+      html: html,
+      createdAt: Number(row.getAttribute('data-created')) || Date.now(),
+      updatedAt: TBOX_SYS.changed[id] ? Date.now() : (Number(row.getAttribute('data-updated')) || Date.now()),
+    });
+  });
+  return { cats: TBOX_SYS.doc.cats || [], items: items };
+}
+
+// 结构性操作(增删分类 / 增删工具)会整体重渲染,先把界面上的编辑收回内存,
+// 否则「改了两个工具的名字,又去新建一个分类」会把那两处改动悄悄丢掉。
+function syncToolboxSystemFromDom() {
+  const host = $('toolbox-sys-body');
+  if (!host || !host.querySelector('[data-tsys-item]')) return;
+  TBOX_SYS.doc.items = readToolboxSystemDoc().items;
+}
+
+async function saveToolboxSystem() {
+  const btn = $('toolbox-sys-save');
+  if (btn) btn.disabled = true;
+  try {
+    const doc = readToolboxSystemDoc();
+    const r = await api('/api/admin/toolbox', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ doc: doc }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error((d.error && d.error.message) || '保存失败');
+    const saved = d.doc || {};
+    TBOX_SYS.doc = {
+      cats: Array.isArray(saved.cats) ? saved.cats : [],
+      items: Array.isArray(saved.items) ? saved.items : [],
+    };
+    TBOX_SYS.changed = {};
+    renderToolboxSystem();
+    toast('系统工具已保存，前台刷新后生效');
+  } catch (err) {
+    setTboxSysStatus(err.message || '保存失败', true);
+    toast(err.message || '保存失败', true);
+  } finally { if (btn) btn.disabled = false; }
+}
+
+async function tboxSysAddCategory() {
+  const input = $('tsys-cat-new');
+  if (!input) return;
+  const name = String(input.value || '').trim();
+  if (!name) return toast('请先填分类名称', true);
+  const cats = TBOX_SYS.doc.cats || [];
+  if (cats.length >= (TBOX_SYS.limits.maxCats || 50)) return toast('分类数量已达上限', true);
+  if (cats.some((c) => String(c.name) === name)) return toast('已经有同名分类了', true);
+  syncToolboxSystemFromDom();
+  let id = tboxSysUid();
+  while (cats.some((c) => String(c.id) === id)) id = tboxSysUid();
+  cats.push({ id: id, name: name });
+  TBOX_SYS.doc.cats = cats;
+  renderToolboxSystem();
+  markTboxSysDirty();
+}
+
+// 删分类不删工具,只把它们的归属清空(与服务端/前台的宽容策略一致:归属指向不存在的分类
+// 时前台按「未分类」显示,但存回去时明确清掉更干净)
+function tboxSysDeleteCategory(id) {
+  syncToolboxSystemFromDom();
+  TBOX_SYS.doc.cats = (TBOX_SYS.doc.cats || []).filter((c) => String(c.id) !== String(id));
+  (TBOX_SYS.doc.items || []).forEach((it) => {
+    if (String(it.cat || '') === String(id)) { it.cat = ''; markTboxSysDirty(it.id); }
+  });
+  renderToolboxSystem();
+  markTboxSysDirty();
+}
+
+function tboxSysAddItem() {
+  syncToolboxSystemFromDom();
+  const list = TBOX_SYS.doc.items || [];
+  if (list.length >= (TBOX_SYS.limits.maxSysItems || 200)) return toast('系统工具数量已达上限', true);
+  const id = tboxSysUid();
+  // 给一个能直接跑的最小骨架:与前台「新建工具」同一份模板,省得对着空白框发呆
+  list.push({
+    id: id,
+    cat: '',
+    title: '新工具',
+    html: '<!doctype html>\n<html lang="zh-CN">\n<head>\n<meta charset="utf-8">\n<meta name="viewport" content="width=device-width,initial-scale=1">\n<title>新工具</title>\n</head>\n<body>\n  <h1>你好</h1>\n</body>\n</html>\n',
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  });
+  TBOX_SYS.doc.items = list;
+  TBOX_SYS.changed[id] = true;
+  renderToolboxSystem();
+  markTboxSysDirty();
+  const row = ($('toolbox-sys-body') || document).querySelector('[data-tsys-item="' + id + '"]');
+  if (row) {
+    const tb = row.querySelector('.tbox-sys-html');
+    if (tb) { tb.classList.remove('hidden'); tb.focus(); }
+  }
+}
+
+async function tboxSysDeleteItem(id) {
+  const it = (TBOX_SYS.doc.items || []).find((x) => String(x.id) === String(id));
+  const name = (it && it.title) || '这个工具';
+  const msg = '确认从系统工具箱删除「' + name + '」？保存后前台所有人都不再看到它。';
+  const ok = window.OCUI && window.OCUI.confirm
+    ? await window.OCUI.confirm({ title: '删除系统工具', message: msg, danger: true, confirmText: '删除' })
+    : window.confirm(msg);
+  if (!ok) return;
+  syncToolboxSystemFromDom();
+  TBOX_SYS.doc.items = (TBOX_SYS.doc.items || []).filter((x) => String(x.id) !== String(id));
+  delete TBOX_SYS.changed[id];
+  renderToolboxSystem();
+  markTboxSysDirty();
 }
 
 // ---------- 在线浏览器:设置(总开关 / 可见范围 / 总结次数上限 / 主页收藏夹) ----------
@@ -5222,6 +5497,21 @@ document.addEventListener('input', (e) => {
   if (!e.target || e.target.id !== 'notes-user-search') return;
   clearTimeout(notesSearchTimer);
   notesSearchTimer = setTimeout(() => { loadNotesUsers().catch(() => {}); }, 350);
+});
+
+// 系统工具里任何输入都算改动。顺带把该行的「打开」链接撤掉:它指向的是库里已保存的
+// 那一版,内容一改就对不上了,留着更容易误导(想预览就先保存)。
+document.addEventListener('input', (e) => {
+  const row = e.target && e.target.closest ? e.target.closest('#toolbox-sys-body [data-tsys-item]') : null;
+  if (!row) return;
+  row.classList.add('is-changed');
+  markTboxSysDirty(row.getAttribute('data-tsys-item'));
+});
+document.addEventListener('change', (e) => {
+  const row = e.target && e.target.closest ? e.target.closest('#toolbox-sys-body [data-tsys-item]') : null;
+  if (!row) return;
+  row.classList.add('is-changed');
+  markTboxSysDirty(row.getAttribute('data-tsys-item'));
 });
 
 $('admin-tabs').addEventListener('click', (e) => {

@@ -2553,13 +2553,12 @@ function buildRequestBody(chatMessages, format, chat, extra) {
     const body = {
       model: state.currentModel,
       stream: state.streamToggle,
-      input: msgs.filter((m) => m.role !== 'system').map((m) => {
-        const content = messageApiContent(m, format);
-        if (Array.isArray(content)) {
-          return { role: m.role === 'assistant' ? 'assistant' : 'user', content };
-        }
-        return content;
-      }),
+      // 每一项都必须是 {role, content} 对象:Responses 只接受顶层字符串或对象数组,
+      // 纯文本消息若按裸字符串放进数组(如 ["你好"]),上游会判成「不支持的参数」直接 400。
+      input: msgs.filter((m) => m.role !== 'system').map((m) => ({
+        role: m.role === 'assistant' ? 'assistant' : 'user',
+        content: messageApiContent(m, format),
+      })),
     };
     if (system) body.instructions = system;
     if (state.currentProviderId) body.providerId = state.currentProviderId;

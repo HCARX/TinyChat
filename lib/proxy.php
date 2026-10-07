@@ -383,11 +383,56 @@ function tc_mistral_parse($name, $bytes, $key) {
     return array('ok' => true, 'markdown' => tc_mineru_clip(implode("\n\n", $texts)), 'mode' => 'mistral', 'name' => $name);
 }
 
+// 把消息 content(字符串,或 [{type,text}] 部件数组)拍平成纯文本。
+// 只用于 responses 格式下把 system 消息搬进 instructions —— 那里只能放文本,图片部件丢弃。
+function tc_content_text($content) {
+    if (is_string($content)) return $content;
+    if (!is_array($content)) return '';
+    $parts = array();
+    foreach ($content as $p) {
+        if (is_string($p)) $parts[] = $p;
+        elseif (is_array($p) && isset($p['text'])) $parts[] = (string) $p['text'];
+    }
+    return implode("\n", $parts);
+}
+
 function tc_prepare_upstream_body($b, $provider, $format) {
     $out = array();
     foreach ($b as $k => $v) {
         if ($k === 'providerId' || $k === 'anthropicVersion' || $k === 'webSearch' || strncmp((string) $k, '_', 1) === 0) continue;
         $out[$k] = $v;
+    }
+    // responses 格式的入参形状和对话格式不同:历史走 input(不是 messages)、系统提示走
+    // instructions、输出上限叫 max_output_tokens。站内几个辅助调用(工具判定/自动标题、
+    // 跟进建议、AI 笔记整理)只按对话格式拼 body,而 endpoint 是跟着供应商格式走的,
+    // 原样转发会被上游当成「不支持的参数」拒掉 —— 而且这类网关往往只回一句笼统的
+    // invalid or unsupported parameter,连字段名都不给,极难排查。这里统一归一化一次,
+    // 调用点就不必各自记着两种形状。
+    if ($format === 'responses' && !isset($out['input']) && isset($out['messages']) && is_array($out['messages'])) {
+        $input = array();
+        $system = array();
+        foreach ($out['messages'] as $m) {
+            if (!is_array($m)) continue;
+            $role = isset($m['role']) ? (string) $m['role'] : 'user';
+            $content = isset($m['content']) ? $m['content'] : '';
+            if ($role === 'system' || $role === 'developer') {
+                $text = trim(tc_content_text($content));
+                if ($text !== '') $system[] = $text;
+                continue;
+            }
+            $input[] = array('role' => $role === 'assistant' ? 'assistant' : 'user', 'content' => $content);
+        }
+        unset($out['messages'], $out['max_tokens']);
+        $out['input'] = $input;
+        if ($system) {
+            $cur = isset($out['instructions']) && is_string($out['instructions']) ? $out['instructions'] : '';
+            $joined = implode("\n\n", $system);
+            $out['instructions'] = $cur === '' ? $joined : ($cur . "\n\n" . $joined);
+        }
+        // Responses 里没有 max_tokens;对话格式调用点带过来的值改挂到 max_output_tokens
+        if (!isset($out['max_output_tokens']) && isset($b['max_tokens'])) {
+            $out['max_output_tokens'] = $b['max_tokens'];
+        }
     }
     $model = isset($out['model']) ? $out['model'] : (isset($provider['models'][0]['id']) ? $provider['models'][0]['id'] : null);
     if ($model) $out['model'] = $model;

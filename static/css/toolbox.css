@@ -37,14 +37,43 @@
   background: var(--bg-surface);
   flex-shrink: 0;
 }
-.tb-title {
+.tb-title { display: inline-flex; align-items: center; gap: 8px; font-weight: 600; color: var(--text-primary); flex-shrink: 0; }
+
+/* 顶栏最左侧:品牌(点回对话首页) + 返回。与笔记 / 在线聊天同一套排布 ——
+   工具箱有自己的地址 /toolbox,这是用户一眼能找到的"出口"。 */
+.tb-brand {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  padding: 3px 6px;
+  border-radius: 8px;
+  flex-shrink: 0;
+  transition: background 0.13s ease;
+}
+.tb-brand:hover { background: var(--bg-hover); }
+.tb-brand img { height: 21px; width: auto; display: block; }
+.tb-brand .brand-logo-dark,
+[data-theme="dark"] .tb-brand .brand-logo-light { display: none; }
+[data-theme="dark"] .tb-brand .brand-logo-dark { display: block; }
+.tb-back-btn {
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 0.893rem;
+  font-family: inherit;
+  cursor: pointer;
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  font-weight: 600;
-  color: var(--text-primary);
+  gap: 3px;
+  padding: 5px 10px;
+  border-radius: 8px;
+  white-space: nowrap;
   flex-shrink: 0;
+  transition: background 0.13s ease, color 0.13s ease;
 }
+.tb-back-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
 .tb-title .oc-icon { color: var(--text-tertiary); }
 .tb-sub {
   flex: 1;
@@ -114,11 +143,52 @@
   box-sizing: border-box;
   overflow: auto;
 }
-/* 列表视图给网格留出最大宽度,宽屏下别把卡片拉得过长 */
-#tb-view-list { align-items: center; }
-#tb-grid {
+/* 列表视图:分类芯片 + 两个分区(我的工具 / 系统工具),整体限宽居中 */
+#tb-view-list { align-items: center; gap: 16px; }
+#tb-view-cats { align-items: center; }
+.tb-chips { width: 100%; max-width: 1100px; display: flex; flex-wrap: wrap; gap: 6px; }
+.tb-chip {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 4px 12px;
+  box-sizing: border-box;
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 0.857rem;
+  cursor: pointer;
+  transition: background 0.13s ease, color 0.13s ease, border-color 0.13s ease;
+}
+.tb-chip:hover { background: var(--bg-hover); color: var(--text-primary); }
+.tb-chip.on { background: var(--accent); border-color: var(--accent); color: var(--primary-text); }
+
+.tb-sec { width: 100%; max-width: 1100px; display: flex; flex-direction: column; gap: 9px; }
+.tb-sec-head { display: flex; align-items: center; gap: 8px; min-height: 22px; }
+.tb-sec-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.929rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  flex-shrink: 0;
+}
+.tb-sec-title .oc-icon { color: var(--text-tertiary); }
+.tb-sec-hint {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.786rem;
+  color: var(--text-tertiary);
+}
+.tb-sec-count { margin-left: auto; flex-shrink: 0; font-size: 0.786rem; color: var(--text-tertiary); }
+#tb-grid-mine, #tb-grid-sys {
   width: 100%;
-  max-width: 1100px;
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
   gap: 12px;
@@ -174,6 +244,20 @@
   white-space: nowrap;
 }
 .tb-card-meta { font-size: 0.786rem; color: var(--text-tertiary); }
+/* 系统工具卡片:与"我的工具"区分开(底色略深 + 角标),但功能上一样能打开运行 */
+.tb-card-builtin { background: var(--bg-code); box-shadow: none; }
+.tb-card-builtin:hover { box-shadow: var(--shadow-sm, 0 1px 2px rgba(0, 0, 0, 0.06)); }
+.tb-card-badge {
+  display: inline-block;
+  margin-right: 5px;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: var(--bg-active);
+  color: var(--text-secondary);
+  font-size: 0.714rem;
+  line-height: 1.5;
+  vertical-align: 1px;
+}
 .tb-card-acts { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
 /* 「新建」卡片:虚线占位,与真实工具区分开 */
 .tb-card-new {
@@ -246,6 +330,24 @@
 .tb-editor-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .tb-count { font-size: 0.786rem; color: var(--text-tertiary); }
 
+/* ---------- 分类管理 ---------- */
+.tb-cats-wrap { width: 100%; max-width: 660px; display: flex; flex-direction: column; gap: 12px; }
+.tb-cats-new { display: flex; align-items: center; gap: 8px; }
+.tb-cats-new .tb-input { flex: 1; min-width: 0; }
+.tb-cats-tip { margin: 0; font-size: 0.857rem; line-height: 1.75; color: var(--text-tertiary); }
+.tb-cats-list { display: flex; flex-direction: column; gap: 6px; }
+.tb-cat-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: var(--radius-md, 9px);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-xs, 0 1px 2px rgba(0, 0, 0, 0.04));
+}
+.tb-cat-name { font-weight: 500; color: var(--text-primary); }
+.tb-cat-num { font-size: 0.786rem; color: var(--text-tertiary); }
+
 /* ---------- 预览 ---------- */
 #tb-view-preview { gap: 10px; padding-bottom: 16px; }
 .tb-preview-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -272,7 +374,13 @@
   .tb-head { flex-wrap: wrap; row-gap: 6px; padding: 8px 10px; }
   .tb-sub { order: 3; flex-basis: 100%; }
   .tb-view { padding: 10px; }
-  #tb-grid { grid-template-columns: 1fr; }
+  /* 窄屏顶栏容不下这么多文字:品牌 logo 与图标已经把意思说清,标题与「分类」只留图标,
+     把宽度让给「新建工具」和关闭键,免得整条顶栏折成两行把内容区挤没。 */
+  .tb-title span:last-child { display: none; }
+  #tb-cats span { display: none; }
+  #tb-cats { padding: 0 9px; }
+  #tb-grid-mine, #tb-grid-sys { grid-template-columns: 1fr; }
+  .tb-sec-hint { display: none; }   /* 窄屏放不下说明文字,卡片上的「系统」角标已经够表意 */
   .tb-preview-name { max-width: 100%; }
   .tb-editor-bar .tb-btn { flex: 1; justify-content: center; }
 }

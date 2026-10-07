@@ -49,6 +49,9 @@ try {
             $changed = tc_seed_default_assistants($db) || $changed;
             // 演示管理员改动的设置在有效期后自动还原
             $changed = tc_demo_revert($db) || $changed;
+            // 迁移期间新种进内存的内容(如内置系统工具箱)还没进库。读请求不落库,
+            // 不在这里顺手写下去的话,种子每次请求都要重新装配一遍。
+            if (!empty($GLOBALS['_tc_db_seed_dirty'])) $changed = true;
             if (!$changed) tc_db_skip_write();
         });
     });
@@ -83,6 +86,8 @@ if ($method === 'GET' || $method === 'HEAD') {
         '/im' => 'index.html',
         // 在线浏览器独立地址:刷新后仍停留在浏览器页(前端 boot 时检测该路径自动打开)
         '/browser' => 'index.html',
+        // 在线工具箱独立地址:刷新后仍停留在工具箱页(前端 boot 时检测该路径自动打开)
+        '/toolbox' => 'index.html',
         '/login' => 'login.html',
         '/login.html' => 'login.html',
         '/admin' => 'admin.html',
@@ -241,6 +246,9 @@ function tc_dispatch($method, $path) {
         array('GET', '#^/api/sync/toolbox$#', 'tc_api_toolbox_get'),
         array('POST', '#^/api/sync/toolbox$#', 'tc_api_toolbox_save'),
         array('GET', '#^/api/toolbox/page$#', 'tc_api_toolbox_page'),
+        // 系统工具箱(后台维护、全员共用):读全体可用,写要管理员
+        array('GET', '#^/api/admin/toolbox$#', 'tc_api_admin_toolbox_get'),
+        array('POST', '#^/api/admin/toolbox$#', 'tc_api_admin_toolbox_save'),
         array('GET', '#^/api/assistants$#', 'tc_api_list_assistants'),
         array('POST', '#^/api/assistants/categories$#', 'tc_api_create_assistant_category'),
         array('POST', '#^/api/assistants/categories/([^/]+)$#', 'tc_api_update_assistant_category'),

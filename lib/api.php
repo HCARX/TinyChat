@@ -5346,9 +5346,26 @@ function tc_toolbox_of($db, $userId) {
     $map = tc_assoc(isset($db['userToolbox']) ? $db['userToolbox'] : array());
     $doc = isset($map[$userId]) && is_array($map[$userId]) ? $map[$userId] : array();
     return array(
+        'cats' => isset($doc['cats']) && is_array($doc['cats']) ? $doc['cats'] : array(),
         'items' => isset($doc['items']) && is_array($doc['items']) ? $doc['items'] : array(),
         // 墓碑:防止别的设备用旧副本把已删除的工具合并回来(与笔记同机制)
         'tombs' => tc_assoc(isset($doc['tombs']) ? $doc['tombs'] : array()),
+    );
+}
+
+// 系统工具箱(后台维护、全员共用)。库里还没有这一行时用内置默认值兜底:
+// 引导流程只保证「尽快落库」,不保证「这个请求之前已经落库」,少了这层兜底就会出现
+// 「刚装好,第一屏打开工具箱是空的」。注意判据是「不是数组」而不是「为空」——
+// 管理员把内置工具全删了会存成 {cats:[],items:[]},那是合法状态,不能被默认值盖回去。
+function tc_sys_toolbox_of($db) {
+    $doc = isset($db['sysToolbox']) ? $db['sysToolbox'] : null;
+    if (!is_array($doc)) {
+        require_once __DIR__ . '/toolbox-default.php';
+        $doc = tc_toolbox_default_system();
+    }
+    return array(
+        'cats' => isset($doc['cats']) && is_array($doc['cats']) ? $doc['cats'] : array(),
+        'items' => isset($doc['items']) && is_array($doc['items']) ? $doc['items'] : array(),
     );
 }
 function tc_toolbox_revision_of($db, $userId) {
@@ -5381,6 +5398,26 @@ function tc_toolbox_item_id($raw) {
     return substr(preg_replace('/[^A-Za-z0-9_-]/', '', (string) $raw), 0, 64);
 }
 
+// 分类:[{id, name}]。id 与工具 id 同规则(要进 URL 与签名);没有名字的分类在界面上
+// 是个点不动的空壳,直接丢弃。超上限按截断处理而不是报错 —— 分类只是归类手段,
+// 为此让整次保存失败不划算(工具与总量的超限仍按报错处理,见 tc_sanitize_toolbox_doc)。
+function tc_sanitize_toolbox_cats($raw, $max = TC_TOOLBOX_MAX_CATS) {
+    $out = array();
+    $seen = array();
+    if (!is_array($raw)) $raw = array();
+    foreach ($raw as $c) {
+        if (!is_array($c)) continue;
+        $id = tc_toolbox_item_id(isset($c['id']) ? $c['id'] : '');
+        if ($id === '' || isset($seen[$id])) continue;
+        $name = trim((string) (isset($c['name']) ? $c['name'] : ''));
+        if ($name === '') continue;
+        $seen[$id] = true;
+        $out[] = array('id' => $id, 'name' => tc_utf_cut($name, TC_TOOLBOX_CAT_NAME_MAX));
+        if (count($out) >= $max) break;
+    }
+    return $out;
+}
+
 function tc_sanitize_toolbox_row($it) {
     if (!is_array($it)) return null;
     $id = tc_toolbox_item_id(isset($it['id']) ? $it['id'] : '');
@@ -5393,8 +5430,11 @@ function tc_sanitize_toolbox_row($it) {
     if (strlen($html) > TC_TOOLBOX_MAX_HTML) {
         tc_fail(413, '单个工具的 HTML 超过 ' . TC_TOOLBOX_MAX_HTML . ' 字符上限，请拆小或压缩后再保存');
     }
+    // 所属分类只清洗成合法 id,**不校验它在 cats 里是否存在**:分类被删掉后,
+    // 指向它的工具应当原样留着(前台显示为「未分类」),而不是顺手把归属抹掉。
     return array(
         'id' => $id,
+        'cat' => tc_toolbox_item_id(isset($it['cat']) ? $it['cat'] : ''),
         'title' => tc_utf_cut($title, 60),
         'html' => $html,
         'createdAt' => (float) (isset($it['createdAt']) ? $it['createdAt'] : tc_now()),
@@ -5402,7 +5442,8 @@ function tc_sanitize_toolbox_row($it) {
     );
 }
 
-function tc_sanitize_toolbox_doc($raw) {
+// $maxItems / $maxTotal 由调用方给:用户自己的工具箱与后台维护的系统工具箱是两套额度。
+function tc_sanitize_toolbox_doc($raw, $maxItems = TC_TOOLBOX_MAX_ITEMS, $maxTotal = TC_TOOLBOX_MAX_TOTAL) {
     if (!is_array($raw)) $raw = array();
     $items = array();
     $seen = array();
@@ -5416,10 +5457,10 @@ function tc_sanitize_toolbox_doc($raw) {
         $items[] = $row;
         // 条数与总量都按上限**报错**,不静默丢弃:工具箱是用户自己点名要留的东西,
         // 悄悄少一个比明确拒绝更让人摸不着头脑。先判再入列,保证不会「加了一半」。
-        if (count($items) > TC_TOOLBOX_MAX_ITEMS) {
-            tc_fail(413, '工具数量超过 ' . TC_TOOLBOX_MAX_ITEMS . ' 个上限，请先删除一些');
+        if (count($items) > $maxItems) {
+            tc_fail(413, '工具数量超过 ' . $maxItems . ' 个上限，请先删除一些');
         }
-        if ($total > TC_TOOLBOX_MAX_TOTAL) {
+        if ($total > $maxTotal) {
             tc_fail(413, '工具箱总大小超过上限，请删除或精简部分工具');
         }
     }
@@ -5436,16 +5477,37 @@ function tc_sanitize_toolbox_doc($raw) {
         if ($tid === '' || isset($seen[$tid])) continue;
         $tombs[$tid] = (float) $ts;
     }
-    return array('items' => $items, 'tombs' => $tombs);
+    return array(
+        'cats' => tc_sanitize_toolbox_cats(isset($raw['cats']) ? $raw['cats'] : array()),
+        'items' => $items,
+        'tombs' => $tombs,
+    );
 }
 
-// 工具页面地址的签名。只证明「链接是我们发的」,不代表有权访问 ——
-// 真正的鉴权在 tc_api_toolbox_page() 里按属主判。
-function tc_toolbox_page_token($id) {
-    return substr(hash_hmac('sha256', 'toolbox:' . (string) $id, tc_secret()), 0, 24);
+// 各类上限下发一份给前端:计数器、新建分类时的名字长度都按它来,免得前后端各写一套数字。
+function tc_toolbox_limits() {
+    return array(
+        'maxItems' => TC_TOOLBOX_MAX_ITEMS,
+        'maxHtml' => TC_TOOLBOX_MAX_HTML,
+        'maxTotal' => TC_TOOLBOX_MAX_TOTAL,
+        'maxCats' => TC_TOOLBOX_MAX_CATS,
+        'catNameMax' => TC_TOOLBOX_CAT_NAME_MAX,
+        'maxSysItems' => TC_TOOLBOX_MAX_SYS_ITEMS,
+        'maxSysTotal' => TC_TOOLBOX_MAX_SYS_TOTAL,
+    );
 }
-function tc_toolbox_page_url($id) {
-    return '/api/toolbox/page?id=' . rawurlencode((string) $id) . '&s=' . tc_toolbox_page_token($id);
+
+// 工具页面地址的签名,只证明「链接是我们发的」,不代表有权访问 ——
+// 真正的鉴权在 tc_api_toolbox_page() 里按功能开关 + 归属判。
+// $sys 走独立命名空间:系统工具与用户工具的 id 各自独立(用户可以给自己那份命名 base64),
+// 不分开签名的话,一张用户工具页的合法链接就能拿去读同名的系统工具,反之亦然。
+function tc_toolbox_page_token($id, $sys = false) {
+    return substr(hash_hmac('sha256', ($sys ? 'toolbox:sys:' : 'toolbox:') . (string) $id, tc_secret()), 0, 24);
+}
+function tc_toolbox_page_url($id, $sys = false) {
+    return '/api/toolbox/page?id=' . rawurlencode((string) $id)
+        . '&s=' . tc_toolbox_page_token($id, $sys)
+        . ($sys ? '&sys=1' : '');
 }
 // 下发用投影:给每个工具带上签名后的页面地址(签名在服务端算,不交给客户端拼)。
 // 客户端推回文档时多带的 pageUrl 会被 tc_sanitize_toolbox_row 丢掉 —— 它按字段白名单重建。
@@ -5461,13 +5523,23 @@ function tc_toolbox_public_doc($db, $userId) {
     return $doc;
 }
 
-// GET /api/sync/toolbox:整份文档
+// 系统工具箱的下发投影。没有 tombs:它是单份文档,不存在「多设备各拿旧副本合并」的问题。
+function tc_sys_toolbox_public_doc($db) {
+    $doc = tc_sys_toolbox_of($db);
+    foreach ($doc['items'] as &$it) $it['pageUrl'] = tc_toolbox_page_url($it['id'], true);
+    unset($it);
+    return $doc;
+}
+
+// GET /api/sync/toolbox:自己的整份文档 + 系统工具(前台只读,改它走 /api/admin/toolbox)
 function tc_api_toolbox_get() {
     tc_with_db(false, function ($db) {
         $user = tc_toolbox_feature_guard($db);
         tc_json(200, array(
             'doc' => tc_toolbox_public_doc($db, $user['id']),
             'revision' => tc_toolbox_revision_of($db, $user['id']),
+            'sys' => tc_sys_toolbox_public_doc($db),
+            'limits' => tc_toolbox_limits(),
         ));
     });
 }
@@ -5502,40 +5574,42 @@ function tc_api_toolbox_save() {
     });
 }
 
-// GET /api/toolbox/page?id=<id>&s=<签名>
-// 把用户存的 HTML 原样吐出,但**响应头必须先把文档变成不透明源**,否则它就是本站源内
-// 一个可执行的网页:能读 localStorage.oc_token、能带着登录态调本站任意接口。
-// 注意 index.php 开头的 tc_send_cors() 发的是全局 `X-Frame-Options: DENY` +
-// CSP `frame-ancestors 'none'`,下面两行是覆盖(与 lib/web.php 的 tc_web_serve 同一处理)。
-function tc_api_toolbox_page() {
-    $q = tc_query();
-    $id = tc_toolbox_item_id(isset($q['id']) ? $q['id'] : '');
-    $sig = (string) (isset($q['s']) ? $q['s'] : '');
-    if ($id === '' || $sig === '' || !hash_equals(tc_toolbox_page_token($id), $sig)) {
-        http_response_code(403);
-        header('Content-Type: text/plain; charset=utf-8');
-        echo '签名无效';
-        exit;
-    }
-    // 签名只说明「链接是本站发的」,不代表「你有权看」:这里再按属主判一次。
-    // 未登录、或登录的是别人,一律 404,不暴露「这个 id 存在」。
-    $html = null;
-    tc_with_db(false, function ($db) use (&$html, $id) {
-        $me = tc_auth_user($db);
-        $uid = $me ? (string) $me['id'] : '';
-        if ($uid === '') $uid = tc_toolbox_cookie_uid($db);   // 页面导航带不了 Authorization 头
-        if ($uid === '') return;
-        $doc = tc_toolbox_of($db, $uid);
-        foreach ($doc['items'] as $it) {
-            if ((string) $it['id'] === $id) { $html = (string) $it['html']; break; }
-        }
+// ============ 系统工具箱(后台维护,见 admin.html 的「在线工具箱」面板) ============
+// 这份文档全员共用:前台每个人都能打开运行,但只有管理员能增删改。刻意**不放进演示快照**
+// 的还原范围:它是全站内容而不是演示者的私人数据,放行等于让演示账号永久删掉全站内置工具,
+// 所以演示管理员一律拒绝写入(与敏感词库同一处理)。
+// GET /api/admin/toolbox
+function tc_api_admin_toolbox_get() {
+    tc_with_db(false, function ($db) {
+        tc_require_admin($db);
+        tc_json(200, array(
+            'doc' => tc_sys_toolbox_public_doc($db),
+            'limits' => tc_toolbox_limits(),
+        ));
     });
-    if ($html === null) {
-        http_response_code(404);
-        header('Content-Type: text/plain; charset=utf-8');
-        echo '工具不存在';
-        exit;
-    }
+}
+
+// POST /api/admin/toolbox:整份文档替换(与前台同步同一套清洗与上限,只是额度更大)
+function tc_api_admin_toolbox_save() {
+    tc_with_db(true, function (&$db) {
+        $user = tc_require_admin($db);
+        if (tc_is_demo_user($user)) tc_fail(403, '演示账号不能修改系统工具箱');
+        $b = tc_read_json_body(16 * 1024 * 1024);
+        $doc = tc_sanitize_toolbox_doc(
+            isset($b['doc']) ? $b['doc'] : array(),
+            TC_TOOLBOX_MAX_SYS_ITEMS,
+            TC_TOOLBOX_MAX_SYS_TOTAL
+        );
+        unset($doc['tombs']);   // 系统工具箱不需要墓碑(见 tc_sys_toolbox_public_doc)
+        $db['sysToolbox'] = $doc;
+        $db['toolboxSysSeeded'] = true;   // 后台一存过,就再也不用种子兜底了
+        tc_json(200, array('ok' => true, 'doc' => tc_sys_toolbox_public_doc($db)));
+    });
+}
+
+// 工具页面的响应头。**两条路(用户自存 / 系统工具)必须共用这一处**:
+// 隔离就是这几行,分头写迟早会各自漂移,而漂移的那一次就是把本站登录态交给页面里的脚本。
+function tc_toolbox_serve_html($html) {
     header('Content-Type: text/html; charset=utf-8');
     header('X-Frame-Options: SAMEORIGIN');
     // 隔离本体:CSP `sandbox` 让这份文档成为**不透明源**(即使被直接打开也一样),
@@ -5550,6 +5624,58 @@ function tc_api_toolbox_page() {
     header('Content-Length: ' . strlen($html));
     echo $html;
     exit;
+}
+
+// GET /api/toolbox/page?id=<id>&s=<签名>[&sys=1]
+// 把存的 HTML 原样吐出,但**响应头必须先把文档变成不透明源**,否则它就是本站源内
+// 一个可执行的网页:能读 localStorage.oc_token、能带着登录态调本站任意接口。
+// 注意 index.php 开头的 tc_send_cors() 发的是全局 `X-Frame-Options: DENY` +
+// CSP `frame-ancestors 'none'`,下面要走 tc_toolbox_serve_html() 覆盖(与 lib/web.php 的
+// tc_web_serve 同一处理)。
+function tc_api_toolbox_page() {
+    $q = tc_query();
+    $id = tc_toolbox_item_id(isset($q['id']) ? $q['id'] : '');
+    $sig = (string) (isset($q['s']) ? $q['s'] : '');
+    $isSys = isset($q['sys']) && (string) $q['sys'] === '1';
+    if ($id === '' || $sig === '' || !hash_equals(tc_toolbox_page_token($id, $isSys), $sig)) {
+        http_response_code(403);
+        header('Content-Type: text/plain; charset=utf-8');
+        echo '签名无效';
+        exit;
+    }
+    // 签名只说明「链接是本站发的」,不代表「你有权看」:这里再判一次功能开关与归属。
+    // 页面是在 iframe / 新标签页里被浏览器**直接导航**的,带不了 Authorization 头,
+    // 所以认人要用 Cookie 兜底(与笔记附件同一机制)。任何一步不满足一律 404,
+    // 不额外暴露「这个 id 存在」。
+    $html = null;
+    tc_with_db(false, function ($db) use (&$html, $id, $isSys) {
+        $me = tc_auth_user($db);
+        if (!$me) {
+            $uid = tc_toolbox_cookie_uid($db);
+            if ($uid !== '') {
+                foreach ($db['users'] as $u) {
+                    if ((string) $u['id'] === $uid && empty($u['deletedAt'])) { $me = $u; break; }
+                }
+            }
+        }
+        if (!$me || !tc_feature_allowed($db, $me, 'toolbox')) return;
+        if ($isSys) {
+            $doc = tc_sys_toolbox_of($db);
+        } else {
+            // 用户工具必须是**自己名下**的:别人的工具即使链接泄漏也打不开
+            $doc = tc_toolbox_of($db, (string) $me['id']);
+        }
+        foreach ($doc['items'] as $it) {
+            if ((string) $it['id'] === $id) { $html = (string) $it['html']; break; }
+        }
+    });
+    if ($html === null) {
+        http_response_code(404);
+        header('Content-Type: text/plain; charset=utf-8');
+        echo '工具不存在';
+        exit;
+    }
+    tc_toolbox_serve_html($html);
 }
 
 // ============ 用户设置云同步(/api/sync/settings) ============
