@@ -16,11 +16,11 @@
 - 前台：<https://tinychat.infinityfree.io/>
 - 后台：<https://tinychat.infinityfree.io/admin>
 - 用户名：`demo` 密码：`123456`
+- **维护中站点：https://tiny.l.cd/**
 
 > Demo 站的 `demo` 账号是「演示管理员」：可以修改设置并在前台立即生效，但**改动会在 10 分钟后自动还原**，且不能修改密码。请把它当成沙盒，尽快体验。
 > 目前**这一账号里做了部分功能的测试，可登录查看对话记录。**
 
-**维护中站点：https://tiny.l.cd/**
 
 ## 🖼 界面预览
 
