@@ -544,22 +544,34 @@ console.log('\n== 9. 系统工具:内置 10 套、平台共用、可加入自己
 // 时间戳那套的「秒 / 毫秒」还被 width:100% 撑满整行。现在改成页内自绘控件。
 // 这里要证的不仅是「看着换了」,而是「选中的值真的进了工具的计算逻辑」:原生控件还在,
 // 只是被藏起来当取值载体,工具脚本读到的必须是新控件写回去的那个值。
-async function toolFrame() {
-  for (const f of page.frames()) {
-    if (f === page.mainFrame()) continue;
-    try { if (await f.$('.oc-sel')) return f; } catch (e) { /* 跨源读不到就换下一个 */ }
+// 轮询等帧内工具页真的渲染出来:`.tb-frame` 元素出现只代表 <iframe> 挂上了,里面的
+// 页面(含注入的下拉运行时)可能还没就绪 —— 只扫一遍的话,CI 上偶发扫个空手就返回 null,
+// 后面第一个 fr.evaluate 直接崩掉、把余下用例全截断(2.0.147 的 CI 上真实发生过:
+// 同一提交的 main 运行死在这里、tag 运行恰好通过,本机永远绿)。快慢差异只决定胜负,
+// 不能再拿「扫一遍」赌这个时序。
+async function toolFrame(timeoutMs = 15000) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    for (const f of page.frames()) {
+      if (f === page.mainFrame()) continue;
+      try { if (await f.$('.oc-sel')) return f; } catch (e) { /* 跨源读不到就换下一个 */ }
+    }
+    if (Date.now() >= deadline) return null;
+    await sleep(150);
   }
-  return null;
 }
 
 console.log('\n== 9b. 内置工具的下拉:不再露系统原生菜单,选中要真进计算 ==');
-{
+sec9b: {
   await openPanel();
   await page.click('#tb-grid-sys .tb-card[data-id="timestamp"] .tb-card-main');
   await page.waitForSelector('#tb-view-preview:not(.hidden)', { timeout: 10000 });
   await page.waitForSelector('.tb-frame', { timeout: 10000 });
   const fr = await toolFrame();
   check('能拿到预览里的工具页(它是不透明源,靠 CDP 才读得到)', !!fr);
+  // 拿不到帧就收好面板走人:这一项已经记了失败,再往下走只会在第一个 fr.evaluate
+  // 崩掉,把本节余下用例连同后面几节一起截断(诊断信息全丢)。
+  if (!fr) { await page.click('#tb-close'); await sleep(400); break sec9b; }
 
   const info = await fr.evaluate(() => {
     const sel = document.querySelector('#unit');
