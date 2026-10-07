@@ -2057,6 +2057,9 @@ assert_contains "公共配置暴露用户协议开关(注册勾选框据此显�
 assert_contains "公共配置暴露是否开放注册" "$(curl -s "$BASE/api/config")" '"allowRegister":'
 assert_contains "公共配置暴露找回密码开关" "$(curl -s "$BASE/api/config")" '"passwordResetEnabled":'
 assert_contains "公共配置暴露邮件就绪标记" "$(curl -s "$BASE/api/config")" '"mailReady":'
+# 邮箱验证开关:开启后注册接口会拒掉空邮箱,注册表单的邮箱要跟着从「可选」变必填 ——
+# 前台拿不到这个字段,标签就会一直写着「(可选)」,用户照它留空提交只会吃一句后端报错。
+assert_contains "公共配置暴露邮箱验证开关(注册邮箱据此去掉「可选」)" "$(curl -s "$BASE/api/config")" '"emailVerificationEnabled":'
 
 # ---------- 每日流量上限 ----------
 # 代理抓取的字节都算在本站出口上,按用户记账。把上限设成 0(不限)时永远放行;

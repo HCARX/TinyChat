@@ -284,6 +284,81 @@ $dangling = array();
 foreach ($sys['items'] as $it) if (!in_array($it['cat'], $sysCats, true)) $dangling[] = $it['id'];
 eq('内置工具的归属都能落在内置分类里', $dangling, array());
 
+// ---------- 6b) 下拉控件:v2 起内置工具不再露出系统原生菜单 ----------
+// 原生 <select> 点开是操作系统的菜单,和整页样式是两套东西(时间戳那个还被 width:100% 撑满整行)。
+// 改法是:包装里注入一段下拉运行时,把页面里的原生 select 就地换成自绘控件并隐藏原生控件 ——
+// 原生控件留着当取值载体,所以工具脚本里的 $('#unit').value 一个字都不用改。
+$once = array();
+foreach ($sys['items'] as $it) {
+    $h = (string) $it['html'];
+    if (substr_count($h, '<script>') !== 2) $once[$it['id']] = '下拉运行时没注入(或注入多次)';
+    // 认运行时用只存在于它脚本里的函数名:样式与脚本里都有 .oc-sel-* 类名,数类名会数错
+    elseif (substr_count($h, 'function closeMenu()') !== 1) $once[$it['id']] = '运行时只该有一份,实得 ' . substr_count($h, 'function closeMenu()');
+    elseif (strpos($h, 'sel.style.display = \'none\'') === false) $once[$it['id']] = '没把原生 select 藏起来';
+    elseif (strpos($h, "sel.dispatchEvent(new Event('change', { bubbles: true }))") === false) $once[$it['id']] = '选中后没派发 change(页内监听会漏掉)';
+}
+eq('每套工具都注入了且只注入一份下拉运行时', $once, array());
+// 运行时只该住在共用包装里,不能渗进各工具的正文/脚本(否则 10 份各写一遍,下一个人改不齐)
+$leak = '';
+foreach (array('TC_TOOLBOX_HTML_TIME', 'TC_TOOLBOX_JS_TIME', 'TC_TOOLBOX_HTML_HASH', 'TC_TOOLBOX_JS_HASH') as $cn) {
+    if (strpos(constant($cn), 'oc-sel') !== false) { $leak = $cn; break; }
+}
+eq('下拉运行时只在共用包装里(不渗进工具正文与脚本)', $leak, '');
+// 自带样式与运行时之间也要分块:出厂原文那一段必须逐字节可认,升级迁移靠它认人
+eq('当前样式 = 出厂原文 + 追加块', TC_TOOLBOX_DEFAULT_CSS, TC_TOOLBOX_DEFAULT_CSS_V1 . TC_TOOLBOX_DEFAULT_CSS_ADD);
+has('追加块里有下拉控件样式', TC_TOOLBOX_DEFAULT_CSS_ADD, '.oc-sel-menu');
+hasnt('出厂原文那一段没有被新样式污染', TC_TOOLBOX_DEFAULT_CSS_V1, 'oc-sel');
+
+// 冻结包装:2.0.145 出厂的那 10 套 HTML 必须能按字节重算出来 —— 升级迁移就是拿它比对
+// 「这套工具还是原文吗」。这里用固定哈希钉死,改动了冻结块会立刻红。
+$v1Hashes = array(
+    'base64' => 'ed61f43aaa0a35acddc3e692946e193c1b5807e7',
+    'urlcode' => '16524481b9ef639281b824aa42b266090e728a03',
+    'jsonfmt' => '00c73b8001c87ed965569621025c0885f46c532c',
+    'timestamp' => '390559de38abfea8830aa95480db0f51bd622b24',
+    'hash' => 'a7988d98afed57c688f5986527dd46e8171786fb',
+    'regex' => '044553077bb4b24e1200b37d8c1e1ffc0421a32d',
+    'password' => '24a4dfbc18151d56b13153cad8bfa15cc9fdf198',
+    'uuid' => '5e911e75d49f3946ee864d56bf650b6d89698984',
+    'color' => '486984e78208797759fc07592a1eea62a6a40926',
+    'texttool' => '679b0b315ef997c2a2987da132eeb08c6d15814e',
+);
+$v1Sys = tc_toolbox_default_system_v1();
+$drift = array();
+foreach ($v1Sys['items'] as $it) {
+    if (!isset($v1Hashes[$it['id']]) || sha1($it['html']) !== $v1Hashes[$it['id']]) $drift[] = $it['id'];
+}
+eq('冻结的 2.0.145 出厂包装仍能按字节重算(迁移判据的前提)', $drift, array());
+$diffCount = 0;
+foreach ($sys['items'] as $it) {
+    foreach ($v1Sys['items'] as $old) if ($old['id'] === $it['id'] && $old['html'] !== $it['html']) $diffCount++;
+}
+eq('新版与出厂原文确实不同(否则迁移无事可做)', $diffCount, 10);
+hasnt('新版包装里没有留空脚本标签', $sys['items'][0]['html'], '<script></script>');
+
+// 迁移:存量库里那 10 套还是 2.0.145 的原文,种子标记已置位不会重种,得单独顺移一次。
+// 管理员动过的那几套(逐字节不同)必须原样不动。
+$legacy = tc_toolbox_default_system_v1();
+$legacy['items'][0]['html'] = str_replace('</body>', '<!-- 管理员加的一行 --></body>', $legacy['items'][0]['html']);
+$migDb = tc_migrate_db(array('sysToolbox' => $legacy, 'toolboxSysSeeded' => true));
+$migById = array();
+foreach ($migDb['sysToolbox']['items'] as $it) $migById[$it['id']] = $it['html'];
+$stale = array();
+foreach ($sys['items'] as $it) {
+    if ($it['id'] === 'base64') continue;   // 这套是管理员改过的,本来就不该被换掉
+    if (!isset($migById[$it['id']]) || $migById[$it['id']] !== $it['html']) $stale[] = $it['id'];
+}
+eq('存量库里的出厂原文都换成了新版', $stale, array());
+has('管理员改过的那套原样保留(判据是逐字节比对)', $migById['base64'], '管理员加的一行');
+eq('登记了迁移标记(只跑一次)', !empty($migDb['toolboxDefaultsV2Merged']), true);
+$migAgain = tc_migrate_db($migDb);
+eq('再跑一次不再改动任何内容', $migAgain['sysToolbox'], $migDb['sysToolbox']);
+$migEmpty = tc_migrate_db(array('sysToolbox' => array('cats' => array(), 'items' => array()), 'toolboxSysSeeded' => true));
+eq('管理员删光系统工具后迁移不会塞回来', $migEmpty['sysToolbox']['items'], array());
+has('迁移里调了顺移函数', $coreSrc, 'tc_migrate_toolbox_defaults($db)');
+has('顺移会把改动落库(读请求不落库)', $fnBody($coreSrc, 'tc_migrate_toolbox_defaults'), '_tc_db_seed_dirty');
+has('顺移的判据是「与出厂原文逐字节相同」', $fnBody($coreSrc, 'tc_migrate_toolbox_defaults'), 'tc_toolbox_default_system_v1()');
+
 // 种子:只跑一次;管理员删光之后不会再塞回来
 $dbSeed = array('sysToolbox' => null);
 eq('首次运行会装入内置工具', tc_seed_system_toolbox($dbSeed), true);

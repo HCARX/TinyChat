@@ -8631,6 +8631,10 @@ function amApplyConfig() {
   if (inviteRow) inviteRow.classList.toggle('hidden', !cfg.registerInviteRequired);
   const agreeRow = $('am-reg-agree-row');
   if (agreeRow) agreeRow.classList.toggle('hidden', !cfg.agreementEnabled);
+  // 邮箱验证:开启后邮箱是必填,标签要去掉「(可选)」(与 /login 同款)
+  if (window.OCUI && window.OCUI.applyEmailRequirement) {
+    window.OCUI.applyEmailRequirement($('am-reg-email-label'), $('am-reg-email'), !!cfg.emailVerificationEnabled);
+  }
   // 第三方登录图标
   if (window.OCUI && window.OCUI.renderOauthIcons) {
     window.OCUI.renderOauthIcons($('am-oauth'), $('am-oauth-icons'), cfg.oauth && cfg.oauth.providers);

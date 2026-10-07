@@ -237,6 +237,11 @@
     S.els.catNew.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addCategory(); } });
     S.els.code.addEventListener('input', updateCount);
     S.els.cat.addEventListener('change', onCatSelect);
+    // 分类下拉换成站内控件:原生 select 点开是操作系统的菜单,和旁边几个输入框是两套观感。
+    // 换的只是外观,value / change 语义照旧(onCatSelect 仍然读 S.els.cat.value)。
+    if (window.OC && typeof window.OC.enhanceSelect === 'function') {
+      S.els.catBox = window.OC.enhanceSelect(S.els.cat, { className: 'tb-cat-box' });
+    }
     S.els.catsList.addEventListener('click', onCatsClick);
     S.els.chips.addEventListener('click', onChipsClick);
     S.els.gridMine.addEventListener('click', onGridClick);
@@ -413,6 +418,8 @@
     S.els.cat.innerHTML = html;
     S.els.cat.value = sel || '';
     if (S.els.cat.value !== (sel || '')) S.els.cat.value = '';   // 选中的分类已被删掉
+    // 选项是每次重建的,站内控件显示的那行文字要跟着重读一遍
+    if (S.els.catBox && S.els.catBox.syncLabel) S.els.catBox.syncLabel();
   }
 
   function startEdit(id, prefill) {
@@ -766,6 +773,10 @@
     if (!S.open) return;
     if (e.key !== 'Escape') return;
     if (document.querySelector('.oc-confirm-mask:not(.hidden)')) return;
+    // 站内下拉的菜单开着时,这个 Esc 归它:它是在 setTimeout 里才把捕获监听挂上的,
+    // 排在本科听器之后,所以这里必须让路 —— 抢过来的话用户的 Esc 会一步退到上一个视图,
+    // 菜单却还浮在上面。
+    if (document.querySelector('.oc-menu')) return;
     if (S.view === 'list') return;
     e.stopImmediatePropagation();
     if (S.view === 'preview') { setView(S.previewFrom === 'editor' ? 'editor' : 'list'); return; }

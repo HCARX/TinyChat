@@ -311,6 +311,19 @@
   font-size: 0.929rem;
 }
 .tb-input:focus, .tb-code:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
+/* 分类下拉换成了站内控件(.select-box),它自己的内边距/圆角与同排的输入框不是一套,
+   这里按 .tb-input 的尺寸收一遍,免得两个控件并排时高度对不齐 */
+.tb-cat-box {
+  height: 36px;
+  padding: 0 12px;
+  box-sizing: border-box;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md, 9px);
+  background: var(--bg-surface);
+  font-size: 0.929rem;
+}
+.tb-cat-box:hover { background: var(--bg-hover); }
+.tb-cat-box:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
 .tb-code {
   flex: 1;
   min-height: 240px;

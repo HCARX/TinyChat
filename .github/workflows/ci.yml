@@ -74,6 +74,10 @@ jobs:
         run: node tests/notes-archive.js
       - name: 弹窗框架契约自检(关闭回调不递归爆栈 / Esc 链路)
         run: node tests/modal-close.js
+      - name: 注册邮箱必填标签自检(开启邮箱验证后去掉「(可选)」/ 两处注册表单都接线)
+        # 开启邮箱验证后注册接口会拒掉空邮箱,可标签还写着「(可选)」—— 用户照它留空提交,
+        # 只会收到一句后端报错。少接一处(登录页与主站弹窗)时功能照常,只有提示是错的。
+        run: node tests/register-email-label.js
       - name: 设置云同步合并自检(逐键时间戳 / 删除墓碑 / 快照往返)
         run: node tests/settings-merge.js
       - name: 安全修复源码契约自检(协议白名单 / postMessage 来源 / 媒体输出加固 / 反原型污染)

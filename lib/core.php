@@ -6,7 +6,7 @@ if (!defined('TC_ROOT')) {
     define('TC_ROOT', dirname(__DIR__));
 }
 
-define('TC_VERSION', '2.0.146');
+define('TC_VERSION', '2.0.147');
 // 单篇笔记正文上限(字符)。超出时接口明确报错而不是静默截断。
 define('TC_NOTE_MAX_CHARS', 500000);
 // 敏感词库上限(去重后的条数)。达到上限后新增词条被丢弃,单个词条本身不截断。
@@ -1892,6 +1892,36 @@ function tc_seed_system_toolbox(&$db) {
     return true;
 }
 
+// 内置工具换新:出厂那 10 套里的时间戳/哈希工具,下拉原本是原生 <select>(点开是操作系统的
+// 菜单,和站内控件两套观感;时间戳那个还被 width:100% 撑满整行)。新版把下拉改成页内自绘控件。
+//
+// 判据是「这套工具的 html 与 2.0.145 的出厂原文逐字节相同」—— 管理员改过的一律不动,
+// 与 v2.0.52「仅当仍等于旧默认值时才顺移」是同一套做法。判据里那份 v1 原文由
+// lib/toolbox-default.php 的冻结包装重算,tests/toolbox.php 用固定哈希钉住它没被改过。
+// 独立标记键保证只跑一次;动了内容就置种子标记,让引导流程那次写顺手落库
+// (迁移跑在读请求里,读请求不落库,见 tc_migrate_db 的说明)。
+function tc_migrate_toolbox_defaults(&$db) {
+    if (!empty($db['toolboxDefaultsV2Merged'])) return;
+    $db['toolboxDefaultsV2Merged'] = true;
+    $GLOBALS['_tc_db_seed_dirty'] = true;   // 标记本身也要落库,否则每次请求都要重算一遍
+    $cur = isset($db['sysToolbox']) ? $db['sysToolbox'] : null;
+    if (!is_array($cur) || empty($cur['items']) || !is_array($cur['items'])) return;
+    require_once __DIR__ . '/toolbox-default.php';
+    $old = array();
+    $new = array();
+    foreach (tc_toolbox_default_system_v1()['items'] as $it) $old[$it['id']] = $it['html'];
+    foreach (tc_toolbox_default_system()['items'] as $it) $new[$it['id']] = $it['html'];
+    $hit = 0;
+    foreach ($cur['items'] as $i => $it) {
+        $id = isset($it['id']) ? (string) $it['id'] : '';
+        if ($id === '' || !isset($old[$id]) || !isset($new[$id]) || $old[$id] === $new[$id]) continue;
+        if (!isset($it['html']) || (string) $it['html'] !== $old[$id]) continue;   // 不是原文就不碰
+        $cur['items'][$i]['html'] = $new[$id];
+        $hit++;
+    }
+    if ($hit) $db['sysToolbox'] = $cur;
+}
+
 function tc_migrate_db($raw) {
     $base = tc_empty_db();
     $db = array_merge($base, is_array($raw) ? $raw : array());
@@ -1983,6 +2013,9 @@ function tc_migrate_db($raw) {
     if (tc_seed_system_toolbox($db)) {
         $GLOBALS['_tc_db_seed_dirty'] = true;
     }
+    // 内置工具换新(第二版):出厂那几套里的原生下拉换成页内自绘控件。存量库里的还是
+    // 2.0.145 的原文,种子标记已置位不会重种,所以得在这里单独顺移一次(改过的不动)。
+    tc_migrate_toolbox_defaults($db);
     $db['version'] = TC_DB_VERSION;
     foreach (array('users', 'providers', 'userGroups', 'accessRules', 'assistantCategories', 'assistants', 'packages', 'redemptionCodes', 'quotaLedger', 'inviteCodes') as $k) {
         $db[$k] = isset($db[$k]) && is_array($db[$k]) ? array_values($db[$k]) : array();

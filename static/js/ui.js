@@ -881,6 +881,13 @@ UI.toggleTheme = function () {
     }
     wrap.classList.remove('hidden');
   };
+  // 开启邮箱验证后,注册接口会拒掉空邮箱(见 tc_api_register),注册表单的邮箱就从「可选」
+  // 变成必填:标签去掉「(可选)」并给输入框补 required,否则用户照着「可选」留空提交,
+  // 只会拿到一句后端的报错。登录页与主站登录弹窗共用这份实现 —— 两处必须同款。
+  UI.applyEmailRequirement = function (labelEl, inputEl, required) {
+    if (labelEl) labelEl.textContent = required ? '邮箱' : '邮箱（可选）';
+    if (inputEl) inputEl.required = !!required;
+  };
 
   window.OCUI = UI;
   window.toast = UI.toast; // 兼容既有调用(messages.js / multimodal.js)

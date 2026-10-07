@@ -14,7 +14,9 @@
  * 免得 HTML 里的 $ 被当成 PHP 变量)。
  */
 
-const TC_TOOLBOX_DEFAULT_CSS = <<<'CSSBASE'
+// 2.0.145 出厂时的全套样式。**别再改这一段**:升级迁移靠逐字节比对认出「这套工具还是出厂
+// 原文」,里面新增的样式一律追加到下面的 TC_TOOLBOX_DEFAULT_CSS_ADD,两块分开才认得出。
+const TC_TOOLBOX_DEFAULT_CSS_V1 = <<<'CSSBASE'
 *,*::before,*::after{box-sizing:border-box}
 body{margin:0;padding:18px;font:14px/1.6 system-ui,-apple-system,"Segoe UI","Noto Sans SC",sans-serif;background:#f6f7f9;color:#1f2328}
 h1{font-size:16px;margin:0 0 12px;font-weight:600}
@@ -68,6 +70,32 @@ th{background:#fafafa;font-weight:500;color:#57606a}
   mark{background:#7c5300}
 }
 CSSBASE;
+
+// 第二版追加:自绘下拉的样式(把工具页里那几个原生 <select> 换成同观感的控件)。
+// 单独一块,见上面 CSS_V1 的说明。
+const TC_TOOLBOX_DEFAULT_CSS_ADD = <<<'CSSADD'
+.oc-sel{position:relative;display:inline-flex;align-items:center;justify-content:space-between;gap:8px;min-width:104px;padding:8px 10px;border:1px solid #d0d5dd;border-radius:8px;background:#fff;color:inherit;font:inherit;cursor:pointer;user-select:none;-webkit-user-select:none}
+.oc-sel:hover{background:#f0f1f3}
+.oc-sel:focus-visible{outline:2px solid #2563eb;outline-offset:-1px}
+.oc-sel.disabled{opacity:.55;cursor:default;pointer-events:none}
+.oc-sel-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.oc-sel-arrow{display:flex;flex-shrink:0;color:#6b7280}
+.oc-sel-menu{position:fixed;z-index:99;min-width:120px;max-height:min(280px,60vh);overflow:auto;padding:4px;border:1px solid #d0d5dd;border-radius:8px;background:#fff;box-shadow:0 8px 24px rgba(16,24,40,.14)}
+.oc-sel-item{padding:7px 10px;border-radius:6px;font-size:13.5px;cursor:pointer;white-space:nowrap}
+.oc-sel-item:hover{background:#f0f1f3}
+.oc-sel-item.on{color:#2563eb;font-weight:600}
+@media(prefers-color-scheme:dark){
+  .oc-sel{background:#1e2128;border-color:#333842}
+  .oc-sel:hover{background:#272b33}
+  .oc-sel-arrow{color:#9aa4b2}
+  .oc-sel-menu{background:#1e2128;border-color:#333842;box-shadow:0 8px 24px rgba(0,0,0,.5)}
+  .oc-sel-item:hover{background:#272b33}
+  .oc-sel-item.on{color:#60a5fa}
+}
+CSSADD;
+
+// 当前版本用的样式 = v1 原文 + 追加块。常量表达式拼接,PHP 5.6 起都支持。
+const TC_TOOLBOX_DEFAULT_CSS = TC_TOOLBOX_DEFAULT_CSS_V1 . TC_TOOLBOX_DEFAULT_CSS_ADD;
 
 // ============ 1. Base64 编解码 ============
 const TC_TOOLBOX_HTML_BASE64 = <<<'BODY_B64'
@@ -700,16 +728,179 @@ JS_TEXT;
 
 // ============ 组装 ============
 /**
+ * 工具页共用的下拉运行时:把页面里的原生 <select> 就地换成同观感的自绘控件。
+ *
+ * 为什么要在工具页里自带一份、而不是复用站内的 .select-box:工具页跑在不透明源的沙箱里
+ * (iframe sandbox / CSP sandbox),拿不到宿主的样式与脚本,页内的一切都得自带。
+ *
+ * 原生 select 仍留在 DOM 里(只是隐藏),所以各工具脚本里的 $('#unit').value、onchange
+ * 一行都不用改 —— 与站内 enhanceSelect 是同一套「只换皮、不动语义」的做法。
+ */
+const TC_TOOLBOX_DEFAULT_UI_JS = <<<'UI_JS'
+(function () {
+  var OPEN = null;
+  function closeMenu() {
+    if (!OPEN) return;
+    OPEN.off();
+    if (OPEN.menu.parentNode) OPEN.menu.parentNode.removeChild(OPEN.menu);
+    OPEN = null;
+  }
+  function enhance(sel) {
+    sel.style.display = 'none';
+    var box = document.createElement('span');
+    box.className = 'oc-sel';
+    box.setAttribute('role', 'button');
+    box.setAttribute('tabindex', '0');
+    var label = document.createElement('span');
+    label.className = 'oc-sel-label';
+    var arrow = document.createElement('span');
+    arrow.className = 'oc-sel-arrow';
+    arrow.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M7 9.5L12 14.5 17 9.5"/></svg>';
+    box.appendChild(label);
+    box.appendChild(arrow);
+    sel.parentNode.insertBefore(box, sel);
+    function sync() {
+      var opt = sel.options[sel.selectedIndex];
+      label.textContent = opt ? opt.textContent : '';
+      box.className = 'oc-sel' + (sel.disabled ? ' disabled' : '');
+      box.setAttribute('aria-disabled', sel.disabled ? 'true' : 'false');
+      box.setAttribute('aria-expanded', OPEN && OPEN.box === box ? 'true' : 'false');
+    }
+    sel.addEventListener('change', sync);
+    function open() {
+      if (sel.disabled) return;
+      if (OPEN) { closeMenu(); return; }
+      var menu = document.createElement('div');
+      menu.className = 'oc-sel-menu';
+      for (var i = 0; i < sel.options.length; i++) {
+        (function (idx) {
+          var item = document.createElement('div');
+          item.className = 'oc-sel-item' + (idx === sel.selectedIndex ? ' on' : '');
+          item.textContent = sel.options[idx].textContent;
+          item.addEventListener('mousedown', function (e) { e.preventDefault(); });
+          item.addEventListener('click', function () {
+            if (sel.selectedIndex !== idx) {
+              sel.selectedIndex = idx;
+              sel.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+            sync();
+            closeMenu();
+          });
+          menu.appendChild(item);
+        })(i);
+      }
+      document.body.appendChild(menu);
+      // 先按触发器定位,再按实测尺寸把它掰回视口内(工具页只有一屏,不需要滚动跟随)
+      var r = box.getBoundingClientRect();
+      menu.style.minWidth = Math.round(r.width) + 'px';
+      menu.style.left = Math.round(r.left) + 'px';
+      menu.style.top = Math.round(r.bottom + 4) + 'px';
+      var m = menu.getBoundingClientRect();
+      if (m.bottom > window.innerHeight - 6) menu.style.top = Math.round(Math.max(6, r.top - 4 - m.height)) + 'px';
+      if (m.right > window.innerWidth - 6) menu.style.left = Math.round(Math.max(6, window.innerWidth - 6 - m.width)) + 'px';
+      var onDoc = function (e) { if (!menu.contains(e.target) && !box.contains(e.target)) closeMenu(); };
+      // 捕获阶段拦截:这一个 Esc 只该收起菜单,别再往页面上冒
+      var onKey = function (e) {
+        if (e.key !== 'Escape') return;
+        e.preventDefault();
+        e.stopPropagation();
+        closeMenu();
+      };
+      var onScroll = function () { closeMenu(); };
+      OPEN = {
+        box: box,
+        menu: menu,
+        off: function () {
+          document.removeEventListener('mousedown', onDoc);
+          document.removeEventListener('keydown', onKey, true);
+          window.removeEventListener('scroll', onScroll, true);
+        },
+      };
+      document.addEventListener('mousedown', onDoc);
+      document.addEventListener('keydown', onKey, true);
+      window.addEventListener('scroll', onScroll, true);
+      sync();
+    }
+    box.addEventListener('click', open);
+    box.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
+    });
+    sync();
+  }
+  var all = document.querySelectorAll('select');
+  for (var i = 0; i < all.length; i++) enhance(all[i]);
+})();
+UI_JS;
+
+/**
  * 装配一整套工具页。用字符串拼接注入共用样式与脚本,不用 heredoc 插值:
  * 工具内容里出现的 $ 与反引号都不会被 PHP 或 JS 模板串解释出错。
+ * $ui 为 '' 时不注入下拉运行时(2.0.145 的出厂样子,迁移比对要用,见下面 v1)。
  */
-function tc_toolbox_default_page($title, $body, $script) {
+function tc_toolbox_default_page_asm($title, $body, $script, $css, $ui) {
     return '<!doctype html>' . "\n"
         . '<html lang="zh-CN"><head><meta charset="utf-8">'
         . '<meta name="viewport" content="width=device-width,initial-scale=1">'
-        . '<title>' . $title . '</title><style>' . TC_TOOLBOX_DEFAULT_CSS . '</style></head><body>'
+        . '<title>' . $title . '</title><style>' . $css . '</style></head><body>'
         . $body
+        . ($ui === '' ? '' : '<script>' . $ui . '</' . 'script>')
         . '<script>' . $script . '</' . 'script></body></html>';
+}
+
+/** 当前版本的包装:v1 那套样式 + 自绘下拉运行时。 */
+function tc_toolbox_default_page($title, $body, $script) {
+    return tc_toolbox_default_page_asm($title, $body, $script, TC_TOOLBOX_DEFAULT_CSS, TC_TOOLBOX_DEFAULT_UI_JS);
+}
+
+/**
+ * 2.0.145 出厂时的包装(**冻结,永远别再动**)。
+ * 升级迁移要靠它把「仍是出厂原文」的工具逐字节认出来换成新版;改一个字,存量库里那些
+ * 待修的内置工具就认不出来了 —— 而它们正是这次要修的对象。
+ * tests/toolbox.php 里用固定哈希把这份输出的字节级一致性钉住了。
+ */
+function tc_toolbox_default_page_v1($title, $body, $script) {
+    return tc_toolbox_default_page_asm($title, $body, $script, TC_TOOLBOX_DEFAULT_CSS_V1, '');
+}
+
+/**
+ * 内置工具的正文与脚本(与包装无关的单一真源),$page 决定用哪一版包装装配。
+ * 只动正文/脚本的话,迁移对那一套工具就不再命中(见 tc_migrate_toolbox_defaults 的判据),
+ * 属于安全的一侧失败:旧库里的那套保持原样,不会被半新半旧地改掉。
+ */
+function tc_toolbox_default_items($page) {
+    $mk = $page;
+    return array(
+        array('id' => 'base64', 'cat' => 'enc', 'title' => 'Base64 编解码',
+            'html' => $mk('Base64 编解码', TC_TOOLBOX_HTML_BASE64, TC_TOOLBOX_JS_BASE64)),
+        array('id' => 'urlcode', 'cat' => 'enc', 'title' => 'URL 编解码',
+            'html' => $mk('URL 编解码', TC_TOOLBOX_HTML_URL, TC_TOOLBOX_JS_URL)),
+        array('id' => 'jsonfmt', 'cat' => 'enc', 'title' => 'JSON 格式化 / 校验',
+            'html' => $mk('JSON 格式化 / 校验', TC_TOOLBOX_HTML_JSON, TC_TOOLBOX_JS_JSON)),
+        array('id' => 'timestamp', 'cat' => 'dev', 'title' => '时间戳转换',
+            'html' => $mk('时间戳转换', TC_TOOLBOX_HTML_TIME, TC_TOOLBOX_JS_TIME)),
+        array('id' => 'hash', 'cat' => 'dev', 'title' => '哈希 / 摘要计算',
+            'html' => $mk('哈希 / 摘要计算', TC_TOOLBOX_HTML_HASH, TC_TOOLBOX_JS_HASH)),
+        array('id' => 'regex', 'cat' => 'dev', 'title' => '正则表达式测试',
+            'html' => $mk('正则表达式测试', TC_TOOLBOX_HTML_RE, TC_TOOLBOX_JS_RE)),
+        array('id' => 'password', 'cat' => 'gen', 'title' => '随机密码生成',
+            'html' => $mk('随机密码生成', TC_TOOLBOX_HTML_PWD, TC_TOOLBOX_JS_PWD)),
+        array('id' => 'uuid', 'cat' => 'gen', 'title' => 'UUID 生成',
+            'html' => $mk('UUID 生成', TC_TOOLBOX_HTML_UUID, TC_TOOLBOX_JS_UUID)),
+        array('id' => 'color', 'cat' => 'ui', 'title' => '颜色转换与色阶',
+            'html' => $mk('颜色转换与色阶', TC_TOOLBOX_HTML_COLOR, TC_TOOLBOX_JS_COLOR)),
+        array('id' => 'texttool', 'cat' => 'text', 'title' => '文本处理（去重 / 排序 / 大小写）',
+            'html' => $mk('文本处理', TC_TOOLBOX_HTML_TEXT, TC_TOOLBOX_JS_TEXT)),
+    );
+}
+
+function tc_toolbox_default_cats() {
+    return array(
+        array('id' => 'enc', 'name' => '编码转换'),
+        array('id' => 'dev', 'name' => '开发辅助'),
+        array('id' => 'gen', 'name' => '随机生成'),
+        array('id' => 'text', 'name' => '文本处理'),
+        array('id' => 'ui', 'name' => '颜色与设计'),
+    );
 }
 
 /**
@@ -717,36 +908,11 @@ function tc_toolbox_default_page($title, $body, $script) {
  * 每套都是独立整页(自带样式与脚本),与用户自存的工具格式完全一致。
  */
 function tc_toolbox_default_system() {
-    $mk = 'tc_toolbox_default_page';
-    return array(
-        'cats' => array(
-            array('id' => 'enc', 'name' => '编码转换'),
-            array('id' => 'dev', 'name' => '开发辅助'),
-            array('id' => 'gen', 'name' => '随机生成'),
-            array('id' => 'text', 'name' => '文本处理'),
-            array('id' => 'ui', 'name' => '颜色与设计'),
-        ),
-        'items' => array(
-            array('id' => 'base64', 'cat' => 'enc', 'title' => 'Base64 编解码',
-                'html' => $mk('Base64 编解码', TC_TOOLBOX_HTML_BASE64, TC_TOOLBOX_JS_BASE64)),
-            array('id' => 'urlcode', 'cat' => 'enc', 'title' => 'URL 编解码',
-                'html' => $mk('URL 编解码', TC_TOOLBOX_HTML_URL, TC_TOOLBOX_JS_URL)),
-            array('id' => 'jsonfmt', 'cat' => 'enc', 'title' => 'JSON 格式化 / 校验',
-                'html' => $mk('JSON 格式化 / 校验', TC_TOOLBOX_HTML_JSON, TC_TOOLBOX_JS_JSON)),
-            array('id' => 'timestamp', 'cat' => 'dev', 'title' => '时间戳转换',
-                'html' => $mk('时间戳转换', TC_TOOLBOX_HTML_TIME, TC_TOOLBOX_JS_TIME)),
-            array('id' => 'hash', 'cat' => 'dev', 'title' => '哈希 / 摘要计算',
-                'html' => $mk('哈希 / 摘要计算', TC_TOOLBOX_HTML_HASH, TC_TOOLBOX_JS_HASH)),
-            array('id' => 'regex', 'cat' => 'dev', 'title' => '正则表达式测试',
-                'html' => $mk('正则表达式测试', TC_TOOLBOX_HTML_RE, TC_TOOLBOX_JS_RE)),
-            array('id' => 'password', 'cat' => 'gen', 'title' => '随机密码生成',
-                'html' => $mk('随机密码生成', TC_TOOLBOX_HTML_PWD, TC_TOOLBOX_JS_PWD)),
-            array('id' => 'uuid', 'cat' => 'gen', 'title' => 'UUID 生成',
-                'html' => $mk('UUID 生成', TC_TOOLBOX_HTML_UUID, TC_TOOLBOX_JS_UUID)),
-            array('id' => 'color', 'cat' => 'ui', 'title' => '颜色转换与色阶',
-                'html' => $mk('颜色转换与色阶', TC_TOOLBOX_HTML_COLOR, TC_TOOLBOX_JS_COLOR)),
-            array('id' => 'texttool', 'cat' => 'text', 'title' => '文本处理（去重 / 排序 / 大小写）',
-                'html' => $mk('文本处理', TC_TOOLBOX_HTML_TEXT, TC_TOOLBOX_JS_TEXT)),
-        ),
-    );
+    return array('cats' => tc_toolbox_default_cats(), 'items' => tc_toolbox_default_items('tc_toolbox_default_page'));
 }
+
+/** 2.0.145 出厂时的整份内容(冻结):只给升级迁移做「还是原文吗」的比对用。 */
+function tc_toolbox_default_system_v1() {
+    return array('cats' => tc_toolbox_default_cats(), 'items' => tc_toolbox_default_items('tc_toolbox_default_page_v1'));
+}
+

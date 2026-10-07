@@ -739,6 +739,8 @@ body {
 .select-box:hover { background: var(--bg-active); }
 .select-box .sb-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .select-box .sb-arrow { color: var(--text-tertiary); display: flex; flex-shrink: 0; }
+/* 对应的原生 select 被设成 disabled 时,新控件要跟着变灰且点不开(见 components.js 里的同步) */
+.select-box.disabled { opacity: .55; pointer-events: none; cursor: default; }
 
 /* 表格行内的小尺寸选择框 */
 .select-box-sm {

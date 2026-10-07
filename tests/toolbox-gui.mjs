@@ -540,7 +540,145 @@ console.log('\n== 9. 系统工具:内置 10 套、平台共用、可加入自己
   await sleep(400);
 }
 
-console.log('\n== 10. 系统工具也是不透明源,签名与用户工具互不通用 ==');
+// 工具页里的下拉:出厂时是原生 <select>,点开是操作系统的菜单,和整页样式两套观感 ——
+// 时间戳那套的「秒 / 毫秒」还被 width:100% 撑满整行。现在改成页内自绘控件。
+// 这里要证的不仅是「看着换了」,而是「选中的值真的进了工具的计算逻辑」:原生控件还在,
+// 只是被藏起来当取值载体,工具脚本读到的必须是新控件写回去的那个值。
+async function toolFrame() {
+  for (const f of page.frames()) {
+    if (f === page.mainFrame()) continue;
+    try { if (await f.$('.oc-sel')) return f; } catch (e) { /* 跨源读不到就换下一个 */ }
+  }
+  return null;
+}
+
+console.log('\n== 9b. 内置工具的下拉:不再露系统原生菜单,选中要真进计算 ==');
+{
+  await openPanel();
+  await page.click('#tb-grid-sys .tb-card[data-id="timestamp"] .tb-card-main');
+  await page.waitForSelector('#tb-view-preview:not(.hidden)', { timeout: 10000 });
+  await page.waitForSelector('.tb-frame', { timeout: 10000 });
+  const fr = await toolFrame();
+  check('能拿到预览里的工具页(它是不透明源,靠 CDP 才读得到)', !!fr);
+
+  const info = await fr.evaluate(() => {
+    const sel = document.querySelector('#unit');
+    const box = sel && sel.previousElementSibling;
+    return {
+      native: !!sel,
+      hidden: sel ? getComputedStyle(sel).display : '',
+      box: box ? box.className : '',
+      label: box ? box.textContent.trim() : '',
+    };
+  });
+  check('原生 select 换成了页内自绘控件', /(^|\s)oc-sel(\s|$)/.test(info.box), JSON.stringify(info));
+  check('原生 select 被隐藏(留作取值载体,不删)', info.hidden === 'none', info.hidden);
+  check('控件显示当前选中项', info.label === '秒', info.label);
+
+  await fr.evaluate(() => document.querySelector('#unit').previousElementSibling.click());
+  await sleep(200);
+  const items = await fr.evaluate(() => Array.from(document.querySelectorAll('.oc-sel-menu .oc-sel-item')).map((e) => e.textContent));
+  check('点开的是页内菜单而不是系统菜单', items.join('/') === '秒/毫秒', items.join('/'));
+
+  await fr.evaluate(() => document.querySelectorAll('.oc-sel-menu .oc-sel-item')[1].click());
+  await sleep(200);
+  const after = await fr.evaluate(() => {
+    const sel = document.querySelector('#unit');
+    return { value: sel.value, label: sel.previousElementSibling.textContent.trim(), menus: document.querySelectorAll('.oc-sel-menu').length };
+  });
+  check('选中后写回原生 select(工具脚本读的就是它)', after.value === '1000', after.value);
+  check('控件文字跟着变', after.label === '毫秒', after.label);
+  check('选完菜单自动收起', after.menus === 0, after.menus);
+
+  // 真的用它算一次:同一个数字按「秒」和「毫秒」必须算出两个不同的年份,
+  // 才能证明选中的单位真的进了 conv() 里的 n*(Number($('#unit').value)||1)。
+  // 注意取 1700000000:按秒算落在 1970,按毫秒算落在 2023 —— 两个单位结果必须不一样,
+  // 否则数字取巧(比如直接填毫秒值)会让这条断言在两个单位下都通过。
+  await fr.fill('#ts', '1700000000');
+  await fr.evaluate(() => document.querySelector('#unit').previousElementSibling.click());
+  await sleep(200);
+  await fr.evaluate(() => document.querySelectorAll('.oc-sel-menu .oc-sel-item')[0].click());
+  await sleep(200);
+  await fr.click('#go');
+  await sleep(250);
+  const asSec = (await fr.innerText('#out')).replace(/\s+/g, ' ');
+  check('按「秒」算:1700000000 落在 1970 年', /1970/.test(asSec), asSec.slice(0, 100));
+
+  await fr.evaluate(() => document.querySelector('#unit').previousElementSibling.click());
+  await sleep(200);
+  await fr.evaluate(() => document.querySelectorAll('.oc-sel-menu .oc-sel-item')[1].click());
+  await sleep(200);
+  await fr.click('#go');
+  await sleep(250);
+  const asMs = (await fr.innerText('#out')).replace(/\s+/g, ' ');
+  check('换成毫秒后同一个数字落在 2023 年(单位真进了计算)', /2023/.test(asMs) && !/1970/.test(asMs), asMs.slice(0, 100));
+  check('没有留下半截的菜单', (await fr.evaluate(() => document.querySelectorAll('.oc-sel-menu').length)) === 0);
+
+  await page.click('#tb-preview-back');
+  await page.waitForSelector('#tb-view-list:not(.hidden)', { timeout: 10000 });
+
+  // 只读态:系统工具的源码是管理员发的,前台改不了 —— 分类下拉也必须跟着禁用。
+  // 换控件后这条要单独验:原生 select 被隐藏了,它自己的 disabled 拦不住新控件上的点击。
+  await page.click('#tb-grid-sys .tb-card[data-id="timestamp"] .tb-icon-btn[data-edit]');
+  await page.waitForSelector('#tb-view-editor:not(.hidden)', { timeout: 10000 });
+  check('查看系统工具源码时控件是禁用态', (await page.locator('#tb-cat-box.disabled').count()) === 1);
+  check('原生分类 select 也是 disabled', await page.locator('#tb-cat').isDisabled());
+  // 直接派发 click(绕过 pointer-events),验的是控件自己的守卫而不是 CSS 挡住了鼠标
+  await page.evaluate(() => document.querySelector('#tb-cat-box').click());
+  await sleep(300);
+  check('禁用态下点不出菜单', (await page.locator('.oc-menu').count()) === 0);
+  await page.click('#tb-cancel');
+  await page.waitForSelector('#tb-view-list:not(.hidden)', { timeout: 10000 });
+
+  await page.click('#tb-close');
+  await sleep(400);
+}
+
+console.log('\n== 9c. 面板内的分类下拉:站内控件,菜单开着时 Esc 只收菜单 ==');
+{
+  await openPanel();
+  await page.click('#tb-new');
+  await page.waitForSelector('#tb-view-editor:not(.hidden)', { timeout: 10000 });
+  check('编辑器里的分类是站内控件', (await page.locator('#tb-cat-box.select-box').count()) === 1);
+  check('原生分类 select 被隐藏(只作取值载体)', await page.locator('#tb-cat').isHidden());
+
+  await page.click('#tb-cat-box');
+  await page.waitForSelector('.oc-menu .oc-menu-item', { timeout: 5000 });
+  const labels = (await page.locator('.oc-menu .oc-menu-item').allInnerTexts()).join('|');
+  check('菜单里是站内下拉的选项(含未分类与新建入口)', labels.includes('未分类') && labels.includes('新建分类'), labels);
+
+  // Esc 的归属:菜单开着时这一个键该收菜单,而不是把视图退回去、更不该整屏关掉面板。
+  // 站内下拉的监听是在 setTimeout 里才挂上的,排在工具箱模块之后 —— 模块不让路就会抢走。
+  await page.keyboard.press('Escape');
+  await sleep(300);
+  check('菜单开着时 Esc 只收菜单', (await page.locator('.oc-menu').count()) === 0);
+  check('没有连带把编辑器退掉', await page.locator('#tb-view-editor:not(.hidden)').isVisible());
+  check('也没有把整个面板关掉', await page.locator('.tb-mask.show').isVisible());
+
+  // 再开一次,选一个分类:值要落到原生 select 上,控件文字要跟着走
+  await page.click('#tb-cat-box');
+  await page.waitForSelector('.oc-menu .oc-menu-item', { timeout: 5000 });
+  const catId = await page.evaluate(() => {
+    const sel = document.querySelector('#tb-cat');
+    const opt = Array.from(sel.options).find((o) => o.value && o.value.indexOf('__none__') !== 0);
+    return opt ? { id: opt.value, name: opt.textContent } : null;
+  });
+  check('有可选的分类(前几节建过)', !!catId, JSON.stringify(catId));
+  if (catId) {
+    await page.locator('.oc-menu .oc-menu-item', { hasText: catId.name }).first().click();
+    await sleep(200);
+    check('选中后写回原生 select', (await page.locator('#tb-cat').inputValue()) === catId.id, await page.locator('#tb-cat').inputValue());
+    check('控件文字同步', (await page.locator('#tb-cat-box .sb-label').innerText()).trim() === catId.name);
+  }
+  // 选过分类,编辑器就脏了,取消要走一次确认(这正是该有的行为)
+  await page.click('#tb-cancel');
+  await page.waitForSelector('.oc-confirm-mask [data-act="ok"]', { timeout: 10000 });
+  await page.click('.oc-confirm-mask [data-act="ok"]');
+  await page.waitForSelector('#tb-view-list:not(.hidden)', { timeout: 10000 });
+  await page.click('#tb-close');
+  await sleep(400);
+}
+
 {
   const doc = await (await fetch(BASE + '/api/sync/toolbox', { headers: AUTH })).json();
   const sysItem = (doc.sys.items || []).find((x) => x.id === 'base64');

@@ -1322,6 +1322,9 @@
     sync(sel.value);
 
     const open = () => {
+      // 只读态取决于原生 select 的 disabled:新控件是独立元素,隐藏的原生控件拦不住点击,
+      // 所以这里要自己守一道(工具箱「查看源码」把分类下拉设成只读就是靠这条路)。
+      if (sel.disabled) return;
       box.setAttribute('aria-expanded', 'true');
       openSelect(box, items(), {
         selected: sel.value,
@@ -1350,6 +1353,23 @@
         configurable: true,
       });
     }
+    // 只读态同理:调用方写的是 cat.disabled = true,不跟着反映的话,新控件看着还能点开
+    const syncDisabled = (off) => {
+      box.classList.toggle('disabled', !!off);
+      box.setAttribute('aria-disabled', off ? 'true' : 'false');
+      // 原生控件被 disabled 后本来就进不了 Tab 序列,新控件上要手动对齐
+      box.setAttribute('tabindex', off ? '-1' : '0');
+    };
+    const ddesc = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'disabled');
+    if (ddesc && !sel.dataset.disabledPatched) {
+      sel.dataset.disabledPatched = '1';
+      Object.defineProperty(sel, 'disabled', {
+        get() { return ddesc.get.call(sel); },
+        set(v) { ddesc.set.call(sel, v); syncDisabled(v); },
+        configurable: true,
+      });
+    }
+    syncDisabled(sel.disabled);
     return box;
   }
   // 按容器批量替换(未指定则全文档);scope 内的 select 都会被接管

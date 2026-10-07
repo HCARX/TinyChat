@@ -177,6 +177,10 @@ fetch(apiUrl('/api/config')).then((r) => r.json()).then((cfg) => {
     const row = $('reg-invite-row');
     if (row) row.classList.remove('hidden');
   }
+  // 邮箱验证:开启后邮箱是必填,标签要去掉「(可选)」(与主站登录弹窗同款)
+  if (window.OCUI && OCUI.applyEmailRequirement) {
+    OCUI.applyEmailRequirement($('reg-email-label'), $('reg-email'), !!(cfg && cfg.emailVerificationEnabled));
+  }
   // 第三方一键登录:后台启用的提供商渲染为图标按钮
   renderOauthIcons(cfg && cfg.oauth);
   // 配置就绪后再兜一次(此时注册表单的协议/邀请码等已按需显示)

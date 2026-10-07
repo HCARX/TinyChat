@@ -167,5 +167,34 @@ check('预览的「返回」回它进来时的地方(previewFrom)',
   /S\.previewFrom = id \? 'list' : 'editor'/.test(js) && /S\.previewFrom === 'editor' \? 'editor' : 'list'/.test(js),
   '预览返回的位置写死了一边');
 
+// 下拉控件:工具箱里原本混着原生 <select>(点开是操作系统的菜单),整改用两种做法 ——
+// 面板内复用站内组件,工具页内(不透明源,拿不到宿主样式)只能自带一份。两条路都只换外观:
+// 原生 select 仍留在 DOM 里当取值载体,所以工具脚本与 onCatSelect 一行都不用改。
+// (defs 是上面剥过注释的内置工具模板,这里直接复用;新增的判定都落在代码行上。)
+const comps = fs.readFileSync(path.join(root, 'static/js/components.js'), 'utf8');
+check('面板内的分类下拉换成站内组件', /OC\.enhanceSelect\(S\.els\.cat, \{ className: 'tb-cat-box' \}\)/.test(js),
+  '编辑器里的分类仍是原生 select');
+check('选项重建后重同步站内控件显示的文字', /S\.els\.catBox\.syncLabel/.test(js),
+  '每次重建 option 后控件显示的还是旧标签');
+check('下拉菜单开着时让路(别把 Esc 抢去退视图)',
+  /if \(document\.querySelector\('\.oc-menu'\)\) return;/.test(js),
+  '站内下拉的监听排在本科听器之后,不让路的话 Esc 会退视图而菜单还浮着');
+check('原生 select 被设成 disabled 时站内控件同步变灰(只读态靠它)',
+  /syncDisabled\(sel\.disabled\)/.test(comps) && /if \(sel\.disabled\) return;/.test(comps),
+  '只读的系统工具里分类下拉看着还能点开');
+check('工具页注入共用的下拉运行时', /const TC_TOOLBOX_DEFAULT_UI_JS = <<<'UI_JS'/.test(defs),
+  '内置工具页里没有下拉运行时,原生 select 还是操作系统的菜单');
+check('运行时把原生 select 藏起来而不是删掉(工具脚本照旧读 .value)',
+  /sel\.style\.display = 'none';/.test(defs) && /sel\.dispatchEvent\(new Event\('change', \{ bubbles: true \}\)\)/.test(defs),
+  '删掉原生控件会让工具脚本取不到值');
+check('运行时的菜单点外面 / Esc / 滚动都会收(听器也都摘干净)',
+  /document\.removeEventListener\('mousedown', onDoc\)/.test(defs)
+  && /document\.removeEventListener\('keydown', onKey, true\)/.test(defs)
+  && /window\.removeEventListener\('scroll', onScroll, true\)/.test(defs),
+  '菜单开着不收会一直浮在页面上挡操作');
+check('工具页下拉样式与运行时分块追加(出厂原文那一段保持逐字节可认)',
+  /TC_TOOLBOX_DEFAULT_CSS_V1 = <<<'CSSBASE'/.test(defs) && /TC_TOOLBOX_DEFAULT_CSS = TC_TOOLBOX_DEFAULT_CSS_V1 \. TC_TOOLBOX_DEFAULT_CSS_ADD;/.test(defs),
+  '把新样式并进 v1 那一段,升级迁移就认不出存量库里的出厂原文了');
+
 console.log(fail === 0 ? '\n工具箱沙箱契约自检通过\n' : '\n失败 ' + fail + ' 项\n');
 process.exit(fail === 0 ? 0 : 1);
