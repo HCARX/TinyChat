@@ -320,11 +320,16 @@
   UI.openModal = function (el) {
     if (!el) return;
     el.classList.remove('hidden');
+    // _closeSeq 是「开合代次」:closeModal 的落幕定时器与这里的入场帧都得认它。
     // 作废还在路上的「落幕」定时器:closeModal 是 320ms 后才加 hidden 的,
     // 关掉又立刻重开时,那条定时器会把刚打开的弹窗再藏起来 —— 表现为弹窗闪一下就没了,
     // 用户得再点一次。IM 抽屉曾为此单独打过补丁,这里在入口统一修掉。
-    el._closeSeq = (el._closeSeq || 0) + 1;
-    requestAnimationFrame(() => el.classList.add('show'));
+    const seq = (el._closeSeq = (el._closeSeq || 0) + 1);
+    // 入场那一帧同样要认代次:rAF 在标签页被挂起时会迟到很久(后台标签页 / 卡顿的渲染进程,
+    // CI 的 headless 上实测能晚几秒),迟到的那一帧若照加不管,就会把 show 加回一个**已经关掉**
+    // 的弹窗上 —— 变成 hidden + show 的幽灵:看不见(display:none 优先级更高),但它仍在 DOM 里
+    // 带着 show,.tb-mask.show 这类选择器与「面板还开着吗」的判断全都会认错。
+    requestAnimationFrame(() => { if (el._closeSeq === seq) el.classList.add('show'); });
     if (modalStack.indexOf(el) === -1) modalStack.push(el);
     document.body.classList.add('modal-open');
     // 记住触发元素,关闭时把焦点还给它(键盘/读屏用户不再被丢回 body)

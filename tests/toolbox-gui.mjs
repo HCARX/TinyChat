@@ -654,6 +654,27 @@ console.log('\n== 12. Esc 关面板后还能再打开(别只藏了遮罩、模�
   check('Esc 关掉之后还能再打开(状态没卡住)', await page.locator('.tb-mask.show').isVisible());
   await page.click('#tb-close');
   await sleep(400);
+
+  // 入场那一帧迟到时不许把 show 加回来。openModal 靠「下一帧加 show」启动入场过渡,而 rAF
+  // 在标签页被挂起时会迟到很久(后台标签页 / 卡顿的渲染进程;Linux CI 的 headless 上实测
+  // 能晚几秒)。迟到的那一帧若照加不管,就会把 show 加回一个已经关掉的面板 —— 停在
+  // hidden + show 的幽灵态:看不见(display:none 优先级更高),却让 `.tb-mask.show`
+  // 与「面板还开着吗」的判断全部认错。这里把 rAF 人为推迟 600ms 复现这个时序。
+  await page.evaluate(() => {
+    window.__origRaf = window.requestAnimationFrame.bind(window);
+    window.requestAnimationFrame = function (cb) { return setTimeout(() => window.__origRaf(cb), 600); };
+  });
+  await page.click('#toolbox-entry-btn');
+  await page.waitForSelector('#tb-view-list:not(.hidden)', { timeout: 15000 });
+  await page.keyboard.press('Escape');
+  await sleep(1500);   // 等那一帧(600ms)真的跑过
+  const ghost = await page.evaluate(() => {
+    const m = document.querySelector('.tb-mask');
+    return { cls: m.className, display: getComputedStyle(m).display };
+  });
+  check('入场帧迟到时,关掉后不会留下 hidden + show 的幽灵', !/(^|\s)show(\s|$)/.test(ghost.cls), ghost.cls);
+  check('关掉后确实不可见(不是只关了一半)', ghost.display === 'none', ghost.cls);
+  await page.evaluate(() => { window.requestAnimationFrame = window.__origRaf; });
 }
 
 console.log('\n== 13. 后台面板:增删分类与工具(接口与界面两处都要对得上)==');

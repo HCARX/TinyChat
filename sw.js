@@ -6,7 +6,7 @@
  *   其余资源(图片/字体/图标)仍用 stale-while-revalidate,省流量、加载快。
  * HTML 页面 / API / SSE 流式 / /v1 出口一律直连,绝不缓存(登录态与流式响应不可缓存)。
  */
-const CACHE = 'tinychat-static-2.0.145';
+const CACHE = 'tinychat-static-2.0.146';
 // 本 SW 拥有的缓存前缀。清理时只删自己这一族,不动同源下别的应用/子站缓存。
 const CACHE_PREFIX = 'tinychat-static-';
 

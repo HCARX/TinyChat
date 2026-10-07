@@ -158,5 +158,35 @@ console.log('\n== 5. 回调置空后不再重复触发(同一遮罩两次 closeM
   check('_onClose 已被清空', !m._onClose);
 }
 
+console.log('\n== 6. 迟到的入场帧不许把 show 加回已关闭的弹窗(幽灵弹窗)==');
+{
+  // openModal 靠「下一帧加 show」启动入场过渡,而 rAF 在标签页被挂起时会迟到很久
+  // (后台标签页 / 卡顿的渲染进程;CI 的 headless 上实测能晚几秒)。迟到的那一帧若照加不管,
+  // 就会把 show 加回一个**已经关掉**的弹窗上 —— 变成 hidden + show 的幽灵:看不见
+  // (display:none 优先级更高),却仍在 DOM 里带着 show,`.tb-mask.show` 这类选择器与
+  // 「面板还开着吗」的判断全都会认错(工具箱 GUI 用例在 Linux CI 上就是这么红的)。
+  // 这里的 rAF 是排队执行的,能精确复现「关掉之后那一帧才到」。
+  const g = makeEl();
+  UI.openModal(g);          // 入场帧还在队列里
+  UI.closeModal(g);         // 没等它跑就关了
+  drain();                  // 现在放那一帧进来
+  check('关掉后迟到的入场帧不会再加 show', !g._classes.has('show'), [...g._classes].join(' '));
+  check('遮罩仍处于 hidden', g._classes.has('hidden'), [...g._classes].join(' '));
+
+  // 反向:正常打开(那一帧在看得到的时候到达)必须照常有 show,别把入场过渡一起修没
+  const okEl = makeEl();
+  UI.openModal(okEl);
+  drain();
+  check('正常打开时入场帧照常加 show(过渡没被误伤)', okEl._classes.has('show'), [...okEl._classes].join(' '));
+
+  // 关掉又立刻重开:重开那一代必须拿到 show,不能因为上一代的帧过期就整场不显示
+  const re = makeEl();
+  UI.openModal(re);
+  UI.closeModal(re);
+  UI.openModal(re);
+  drain();
+  check('关掉后立刻重开仍然会显示', re._classes.has('show') && !re._classes.has('hidden'), [...re._classes].join(' '));
+}
+
 console.log('\n' + (fail ? `✗ 弹窗框架契约自检失败: ${fail} 项` : '✓ 弹窗框架契约自检通过'));
 process.exit(fail ? 1 : 0);
