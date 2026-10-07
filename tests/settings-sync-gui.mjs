@@ -250,6 +250,36 @@ check('关闭后接口返回 syncSettings:false', saveData.syncSettings === fals
 check('关闭后不写库(修订号不变)', Number((await serverSettings()).revision) === before);
 await fetch(BASE + '/api/admin/settings', { method: 'POST', headers: AUTH, body: JSON.stringify({ syncSettings: true }) });
 
+console.log('\n== 6. 云同步应用时,已打开的群聊设置弹窗要跟着重绘 ==');
+// 「改本地配置 → 走同步应用链路(OCGroup.reload)」就是云同步落下来的那条路。
+// 以前 reload 按 id 找一个并不存在的元素,永远取到 null:开着设置弹窗时同步落下来,
+// 面板还停在旧配置上,用户得关掉再打开才看得到同步结果。
+// 先把本机修订号追到服务端最新:下面点开关会排一次延迟推送(1200ms),修订号落后的话
+// 那次推送会 409,走的是「自动合并后重推」的正常分支,却会在控制台留一行报错 ——
+// 那是本条用例自己制造出来的噪音,不该让最后的「页面无 JS 报错」捡走。
+await A.page.evaluate(() => window.OCSettingsSync.pull({ force: true })).catch(() => {});
+// 开关是「切换」:只有当前是简单模式时点它才会开群聊并弹设置窗,所以先判一下再点。
+await A.page.evaluate(() => { if (!window.OCGroup.isGroupMode()) document.querySelector('#chat-mode-row .switch').click(); });
+await A.page.waitForSelector('#group-modal.show', { state: 'visible', timeout: 8000 }).catch(() => bad('群聊设置弹窗没打开'));
+check('群聊设置弹窗已打开(元素本身可寻址)', await A.page.evaluate(() => {
+  const m = document.getElementById('group-modal');
+  return !!m && m.classList.contains('show');
+}));
+const OPEN_RENAMED = '同步重绘后的群名';
+const titleAfter = await A.page.evaluate((newName) => {
+  const c = JSON.parse(localStorage.getItem('oc_groups') || '{}');
+  const g = (c.groups || []).find((x) => x.id === c.activeId) || (c.groups || [])[0];
+  if (g) g.name = newName;
+  localStorage.setItem('oc_groups', JSON.stringify(c));
+  // 云同步应用后的那条链路
+  window.OCGroup.reload();
+  const t = document.getElementById('group-modal-title');
+  return t ? t.textContent : '';
+}, OPEN_RENAMED);
+check('已打开的弹窗跟着重绘(标题显示新群名,实际「' + titleAfter + '」)', titleAfter.includes(OPEN_RENAMED));
+
+// 点开关排下的那次推送(1200ms 延迟)要等它跑完再看报错,否则它会落在断言之后。
+await sleep(2200);
 check('页面无 JS 报错', pageErrors.length === 0);
 if (pageErrors.length) console.log('    ' + pageErrors.slice(0, 5).join('\n    '));
 

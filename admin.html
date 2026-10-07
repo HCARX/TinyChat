@@ -9,16 +9,16 @@
 <meta name="robots" content="noindex,nofollow">
 <link rel="icon" type="image/svg+xml" href="./logo-icon.svg">
 <link rel="apple-touch-icon" href="./static/logo/app-icon-192.png">
-<link rel="stylesheet" href="./static/css/style.min.css?v=2.0.147">
-<link rel="stylesheet" href="./vendor/highlight/github.min.css?v=2.0.147" id="hljs-theme">
-<link rel="stylesheet" href="./vendor/katex/katex.min.css?v=2.0.147">
-<link rel="stylesheet" href="./static/css/enhanced.min.css?v=2.0.147">
-<link rel="stylesheet" href="./static/css/refine.min.css?v=2.0.147">
-<link rel="stylesheet" href="./static/css/redesign.min.css?v=2.0.147">
-<link rel="stylesheet" href="./static/css/polish.min.css?v=2.0.147">
-<link rel="stylesheet" href="./static/css/markdown.min.css?v=2.0.147">
-<link rel="stylesheet" href="./static/css/chrome.min.css?v=2.0.147">
-<script src="./static/js/theme-boot.min.js?v=2.0.147"></script>
+<link rel="stylesheet" href="./static/css/style.min.css?v=2.0.149">
+<link rel="stylesheet" href="./vendor/highlight/github.min.css?v=2.0.149" id="hljs-theme">
+<link rel="stylesheet" href="./vendor/katex/katex.min.css?v=2.0.149">
+<link rel="stylesheet" href="./static/css/enhanced.min.css?v=2.0.149">
+<link rel="stylesheet" href="./static/css/refine.min.css?v=2.0.149">
+<link rel="stylesheet" href="./static/css/redesign.min.css?v=2.0.149">
+<link rel="stylesheet" href="./static/css/polish.min.css?v=2.0.149">
+<link rel="stylesheet" href="./static/css/markdown.min.css?v=2.0.149">
+<link rel="stylesheet" href="./static/css/chrome.min.css?v=2.0.149">
+<script src="./static/js/theme-boot.min.js?v=2.0.149"></script>
 </head>
 <body class="admin-body">
 <form id="admin-fields" autocomplete="off" style="display:contents">
@@ -319,7 +319,8 @@
       <div id="web-access-block"></div>
       <label class="user-form-admin"><span class="switch"><input type="checkbox" id="web-cn-only" checked><span class="slider"></span></span><span>仅允许访问中国 IP 网站（默认开启；导航到的网页域名解析到境内 IP 才放行，每一跳都校验）</span></label>
       <label class="user-form-admin"><span class="switch"><input type="checkbox" id="web-cn-allow-assets" checked><span class="slider"></span></span><span>放行国内页面引用的海外静态资源（默认开启）</span></label>
-      <p class="muted small">开启后，代理出网只会走向解析在境内（中国大陆）IP 段的站点，境外站点与域名会直接拒绝并给出提示。判定用的是随包发布的境内 IP 段表（<code>lib/cn-ip.bin</code>，约 1.1 万个网段），只在服务端做，不请求任何外部接口。<b>「放行海外静态资源」解决「百度等国内站打不开」</b>：国内大站的图片/脚本常挂在海外 CDN 上（实测百度首页会引用 <code>ir.baidu.com</code>，它解析到 Akamai），逐个域名判归属会把首页打残；开启后只对「已被某个境内页面引用过」的资源主机放行，且网页本身（HTML 文档）仍必须解析在境内。关掉即恢复为可访问任意公网站点——<b>出口 IP 的声誉与流量都算在本站账上，请自行评估风险</b>。</p>
+      <label class="user-form-admin"><span class="switch"><input type="checkbox" id="web-cn-whitelist-enabled" checked><span class="slider"></span></span><span>启用域名白名单（默认开启；名单内的域名不看 IP 直接放行，用于国内站解析落在境外、以及境外学术站）</span></label>
+      <p class="muted small">开启后，代理出网只会走向解析在境内（中国大陆）IP 段的站点，境外站点与域名会直接拒绝并给出提示。判定用的是随包发布的境内 IP 段表（<code>lib/cn-ip.bin</code>，约 1.1 万个网段），只在服务端做，不请求任何外部接口。<b>「放行海外静态资源」解决「百度等国内站打不开」</b>：国内大站的图片/脚本常挂在海外 CDN 上（实测百度首页会引用 <code>ir.baidu.com</code>，它解析到 Akamai），逐个域名判归属会把首页打残；开启后只对「已被某个境内页面引用过」的资源主机放行，且网页本身（HTML 文档）仍必须解析在境内。<b>「域名白名单」解决「按 IP 判会误拦」</b>：有些站点的解析结果就在境外 IP 上（国内站用海外 CDN/DNS，境外学术站本身如此），这些域名不看 IP 直接放行；填一级域名即放行其全部子域名。关掉即恢复为可访问任意公网站点——<b>出口 IP 的声誉与流量都算在本站账上，请自行评估风险</b>。</p>
       <div class="pkg-form-grid">
         <label class="field"><span>网页 AI 总结每日次数上限（每用户，0 = 不限；单次调用仍按额度计费）</span>
           <input id="web-ai-limit" type="number" min="0" max="10000" step="1" value="50"></label>
@@ -327,6 +328,10 @@
           <input id="web-traffic-mb" type="number" min="0" max="1024000" step="50" value="500"></label>
         <label class="field"><span>子资源并发预取数（1~16，默认 6；翻页时并行预抓图片/样式表让首屏更快，越大越吃服务器连接数）</span>
           <input id="web-concurrency" type="number" min="1" max="16" step="1" value="6"></label>
+      </div>
+      <div class="pkg-form-grid">
+        <label class="field"><span>域名白名单（每行一个域名，<b>填一级域名即放行其全部子域名</b>；以 <code>#</code> 开头的整行为注释，行内 <code>#</code> 之后也忽略。留空使用内置默认：常用国内站点 + Google 学术 / PubMed / arXiv 等纯学术站）</span>
+          <textarea id="web-cn-whitelist" rows="12" spellcheck="false" placeholder="## 境外学术网站&#10;scholar.google.com&#10;pubmed.ncbi.nlm.nih.gov&#10;&#10;## 常用国内网站&#10;baidu.com"></textarea></label>
       </div>
       <div class="pkg-form-grid">
         <label class="field"><span>主页收藏夹（每行一条，格式：<code>名称|网址</code>；留空用内置默认：百度、必应、知乎、哔哩哔哩、微博、豆瓣、CSDN、知网等国内常用站。此处配置会覆盖内置默认）</span>
@@ -1221,17 +1226,17 @@
   </div>
 </div>
 </form>
-<script defer src="./static/js/config.min.js?v=2.0.147"></script>
-<script defer src="./static/js/icons.min.js?v=2.0.147"></script>
-<script defer src="./vendor/markdown-it/markdown-it.min.js?v=2.0.147"></script>
-<script defer src="./vendor/markdown-it/markdown-it-footnote.min.js?v=2.0.147"></script>
-<script defer src="./vendor/markdown-it/markdown-it-emoji.min.js?v=2.0.147"></script>
-<script defer src="./vendor/dompurify/purify.min.js?v=2.0.147"></script>
-<script defer src="./vendor/katex/katex.min.js?v=2.0.147"></script>
-<script defer src="./vendor/highlight/highlight.min.js?v=2.0.147"></script>
-<script defer src="./static/js/ui.min.js?v=2.0.147"></script>
-<script defer src="./static/js/components.min.js?v=2.0.147"></script>
-<script defer src="./static/js/renderer.min.js?v=2.0.147"></script>
-<script defer src="./static/js/admin.min.js?v=2.0.147"></script>
+<script defer src="./static/js/config.min.js?v=2.0.149"></script>
+<script defer src="./static/js/icons.min.js?v=2.0.149"></script>
+<script defer src="./vendor/markdown-it/markdown-it.min.js?v=2.0.149"></script>
+<script defer src="./vendor/markdown-it/markdown-it-footnote.min.js?v=2.0.149"></script>
+<script defer src="./vendor/markdown-it/markdown-it-emoji.min.js?v=2.0.149"></script>
+<script defer src="./vendor/dompurify/purify.min.js?v=2.0.149"></script>
+<script defer src="./vendor/katex/katex.min.js?v=2.0.149"></script>
+<script defer src="./vendor/highlight/highlight.min.js?v=2.0.149"></script>
+<script defer src="./static/js/ui.min.js?v=2.0.149"></script>
+<script defer src="./static/js/components.min.js?v=2.0.149"></script>
+<script defer src="./static/js/renderer.min.js?v=2.0.149"></script>
+<script defer src="./static/js/admin.min.js?v=2.0.149"></script>
 </body>
 </html>

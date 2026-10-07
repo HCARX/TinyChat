@@ -179,6 +179,16 @@ check('选项重建后重同步站内控件显示的文字', /S\.els\.catBox\.sy
 check('下拉菜单开着时让路(别把 Esc 抢去退视图)',
   /if \(document\.querySelector\('\.oc-menu'\)\) return;/.test(js),
   '站内下拉的监听排在本科听器之后,不让路的话 Esc 会退视图而菜单还浮着');
+// 让路的前提是对方真的接得住:站内下拉的 Esc 必须在菜单进 DOM 时就注册,不能和
+// mousedown/scroll 那几项一起藏在 setTimeout(0) 里 —— 晚一档时这一刻还没有人接手,
+// 让路的一方什么都没做,别处的 Esc(关弹窗栈顶)却把整屏关了、菜单还浮在上面。
+// 这场 0ms 竞速只在 CI 的 headless Linux 上露过面(见 toolbox-gui 的同一任务用例)。
+check('站内下拉的 Esc 在菜单进 DOM 时就注册(不跟着 mousedown 藏进 setTimeout)',
+  /document\.addEventListener\('keydown', onKey, true\);\s*\n\s*setTimeout\(\(\) => \{/.test(comps),
+  'Esc 监听和 mousedown/scroll 一起延后了,菜单刚弹出的那一档没人接这个键');
+check('延后一档到达时菜单已被关掉就不再挂监听(否则永远没人摘)',
+  /if \(openMenu !== menu\) return;\s*\n\s*document\.addEventListener\('mousedown', onDoc\)/.test(comps),
+  '菜单关掉后那一档才跑到,几个监听挂上去就再也没人摘了');
 check('原生 select 被设成 disabled 时站内控件同步变灰(只读态靠它)',
   /syncDisabled\(sel\.disabled\)/.test(comps) && /if \(sel\.disabled\) return;/.test(comps),
   '只读的系统工具里分类下拉看着还能点开');

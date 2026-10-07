@@ -241,9 +241,24 @@ function tc_normalize_provider_input($b, $base = array(), $demo = false) {
     $p = $base;
     if (array_key_exists('name', $b)) $p['name'] = substr(trim((string) $b['name']), 0, 60);
     if (array_key_exists('baseUrl', $b)) $p['baseUrl'] = rtrim(trim((string) $b['baseUrl']), '/');
-    // 演示管理员的请求里密钥字段一律为空(接口本就不下发),因此整段跳过密钥处理:
-    // 否则「打开编辑框直接保存」会因 keys=[] 把已有密钥全部清空。
-    $skipKeys = $demo;
+    // 密钥字段的取舍:留空或仍是掩码一律表示「不修改」,保留原值(可能是密文)。
+    // 演示管理员的接口本就不下发密钥,前端编辑后提交的是空 keys —— 空提交会清掉已有密钥,
+    // 所以这整段要跳过。但「跳过」得看他这次到底有没有带来新明文:演示管理员新增供应商时
+    // 是手打了一把 Key 的,连它一起跳过就会以「API Key 不能为空」告终(用户明明填了)。
+    // 因此只有「演示身份 + 本次没带任何新明文」才跳过;带了新明文就照常收下。
+    $hasNewPlain = false;
+    if (array_key_exists('apiKey', $b)) {
+        $k = trim((string) $b['apiKey']);
+        if ($k !== '' && strpos($k, '••') === false) $hasNewPlain = true;
+    }
+    if (array_key_exists('keys', $b) && is_array($b['keys'])) {
+        foreach ($b['keys'] as $k) {
+            if (!is_array($k)) continue;
+            $plain = isset($k['apiKey']) ? trim((string) $k['apiKey']) : '';
+            if ($plain !== '' && strpos($plain, '••') === false) { $hasNewPlain = true; break; }
+        }
+    }
+    $skipKeys = $demo && !$hasNewPlain;
     if (!$skipKeys && array_key_exists('apiKey', $b)) {
         $key = trim((string) $b['apiKey']);
         // 留空或仍是掩码表示「不修改密钥」,保留原值(可能是密文)
@@ -1066,6 +1081,9 @@ function tc_api_public_config($db) {
         'webCnOnly' => !array_key_exists('webCnOnly', $s) || !empty($s['webCnOnly']),
         // 国内站引用海外 CDN 的静态资源时是否放行(默认放行;关掉后子资源也必须解析在境内)
         'webCnAllowAssets' => !array_key_exists('webCnAllowAssets', $s) || !empty($s['webCnAllowAssets']),
+        // 域名白名单是否启用。启用的话,白名单内的域名不看 IP 直接放行;前台据此把
+        // 「服务器缺境内 IP 数据」的提示说准确(此时名单内的站仍可访问,不是「任何站点都不行」)。
+        'webCnWhitelistEnabled' => !array_key_exists('webCnWhitelistEnabled', $s) || !empty($s['webCnWhitelistEnabled']),
         // 每用户每日出网流量上限(MB,0 = 不限),前台据此展示今日剩余流量
         'webDailyTrafficMb' => (int) (isset($s['webDailyTrafficMb']) ? $s['webDailyTrafficMb'] : 500),
         // 境内 IP 段数据是否可用。开关默认开着,而数据缺失会让所有站点一起被拒;

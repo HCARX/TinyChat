@@ -648,12 +648,27 @@ console.log('\n== 9c. 面板内的分类下拉:站内控件,菜单开着时 Esc 
   check('菜单里是站内下拉的选项(含未分类与新建入口)', labels.includes('未分类') && labels.includes('新建分类'), labels);
 
   // Esc 的归属:菜单开着时这一个键该收菜单,而不是把视图退回去、更不该整屏关掉面板。
-  // 站内下拉的监听是在 setTimeout 里才挂上的,排在工具箱模块之后 —— 模块不让路就会抢走。
+  // 站内下拉的捕获监听在菜单进 DOM 时挂上,但注册排在工具箱模块之后 —— 模块不让路就会抢走。
   await page.keyboard.press('Escape');
   await sleep(300);
   check('菜单开着时 Esc 只收菜单', (await page.locator('.oc-menu').count()) === 0);
   check('没有连带把编辑器退掉', await page.locator('#tb-view-editor:not(.hidden)').isVisible());
   check('也没有把整个面板关掉', await page.locator('.tb-mask.show').isVisible());
+
+  // 上面那次是按 Playwright 的节奏按下(CDP 一来一回,足以让 setTimeout(0) 那一档先跑完),
+  // 量的是「监听挂上之后」的归属。这里再把**同一任务内**的时序钉死:点开菜单后不等任何一帧
+  // 就派发 Esc —— 下拉自己的延后注册这时还没跑到,若它的捕获监听也藏在那一档里,就没有人
+  // 接手这个键:让路的模块什么都没做,别处的 Esc(关弹窗栈顶)却把整屏关掉,菜单还浮在上面。
+  // CI 的 headless Linux 上输的正是这场 0ms 竞速(按 Playwright 节奏按永远看不到),
+  // 所以做成不依赖机器快慢的确定性用例。
+  await page.evaluate(() => {
+    document.querySelector('#tb-cat-box').click();
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  });
+  await sleep(300);
+  check('同一任务内:菜单进 DOM 后 Esc 立刻归它(捕获监听不许延后挂)', (await page.locator('.oc-menu').count()) === 0);
+  check('同一任务内:编辑器与面板都没被这个 Esc 带走',
+    (await page.locator('#tb-view-editor:not(.hidden)').isVisible()) && (await page.locator('.tb-mask.show').isVisible()));
 
   // 再开一次,选一个分类:值要落到原生 select 上,控件文字要跟着走
   await page.click('#tb-cat-box');

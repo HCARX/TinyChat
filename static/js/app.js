@@ -2768,7 +2768,10 @@ async function sendMessage() {
     openAuthModal();
     return;
   }
-  if (!state.currentProviderId || !state.currentModel) {
+  // 群聊模式的模型来自每个角色各自的配置,不依赖全局的「当前模型」。
+  // 群聊下拿它拦发送会误伤:角色还没分配模型时用户本该看到的是群聊那条提示。
+  const inGroupMode = !!(window.OCGroup && window.OCGroup.isGroupMode());
+  if (!inGroupMode && (!state.currentProviderId || !state.currentModel)) {
     // 已登录但没有可用供应商/模型(后台清空、加载失败等):明确提示,而不是把人往登录框赶
     toast('暂无可用的模型，请联系管理员或稍后重试', true);
     return;
@@ -2797,9 +2800,10 @@ async function sendMessage() {
   }
 
   // 群聊模式:交给群聊管线(多成员按对话模式顺序发言),不走单模型/生图/视频意图
-  if (window.OCGroup && window.OCGroup.isGroupMode()) {
-    // 先让管线确认能开跑(回合进行中会被拒),再清空输入框;
-    // 反过来的话,正在生成时按 Enter 的用户会既没发出消息又丢了刚打的字。
+  if (inGroupMode) {
+    // 先让管线确认能开跑(回合进行中 / 没建群 / 没给角色分配模型都会被拒),再清空输入框。
+    // 反过来的话,被拒的用户会既没发出消息又丢了刚打的字 —— 这条承诺由管线回传的
+    // true/false 守住,所以「拒绝了」也必须在返回值里说出来,不能只是弹个提示。
     const accepted = await window.OCGroup.sendGroupTurn(text, attachments);
     if (!accepted) return;
     input.value = '';
@@ -2831,6 +2835,12 @@ async function sendMessage() {
   // 但返回的是 {images:[...]} 结构,对话渲染按 choices 取文本取不到,于是表现为「不出图」。
   if (modelIsImage(state.currentModel)) {
     const imageAtts = attachments.filter((a) => a && a.type === 'image' && a.dataUrl).slice(0, 4);
+    if (!text && !imageAtts.length) {
+      // 生图模型只认画面描述与图片:这轮两样都没有(例如只挂了一份文档)。
+      // 下面会清空输入框,所以先拦一道,别让用户的附件和草稿凭空消失。
+      toast('当前是生图模型，请输入画面描述或添加图片', true);
+      return;
+    }
     input.value = '';
     autosizeInput();
     state.pendingAttachments = [];
@@ -2844,6 +2854,11 @@ async function sendMessage() {
   // 视频模型:纯文本=文生视频,带图=以图为参考生视频,都走视频接口(异步任务)。
   if (modelIsVideo(state.currentModel)) {
     const imageAtts = attachments.filter((a) => a && a.type === 'image' && a.dataUrl).slice(0, 5);
+    if (!text && !imageAtts.length) {
+      // 同上:先拦下空发,再谈清空输入框
+      toast('当前是视频模型，请输入画面描述或添加图片', true);
+      return;
+    }
     input.value = '';
     autosizeInput();
     state.pendingAttachments = [];
@@ -6719,9 +6734,10 @@ async function ingestFiles(files, opts) {
       toast(e.message || '解析失败', true);
     }
   });
-  attachBtn.innerHTML = btn.innerHTML;
-  // 移动 input 到按钮内并保留事件
-  attachBtn.appendChild(input);
+  // 搬真节点,不用 innerHTML 拷贝:btn 里已经挂着真正接好事件的 <input type=file>,
+  // 而 innerHTML 会把它一起序列化成一份没有监听器的副本 —— 再 appendChild(input) 就成了
+  // 按钮里两个文件输入框,取到副本的那个「选了文件毫无反应」。移节点还能保住原监听。
+  attachBtn.replaceChildren(...btn.childNodes);
   attachBtn.addEventListener('click', () => input.click());
   const more = $('composer-more');
   const tools = $('composer-tools');

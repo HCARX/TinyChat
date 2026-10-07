@@ -291,8 +291,11 @@
     cache = null;
     load();
     syncModeUI();
-    const modal = document.getElementById('group-modal');
-    if (modal && !modal.classList.contains('hidden')) render();
+    // 弹窗是运行时建的,直接认闭包里的 modalEl(而不是按 id 去查 —— 曾经这里查的 id
+    // 与元素对不上,永远取到 null,「同步后重绘已打开的弹窗」这行等于没写:开着设置弹窗时
+    // 云同步落下来,面板还停在旧配置上)。「开着」按全站统一判据(有 show)判断,不用 hidden ——
+    // closeModal 是先摘 show、320ms 后才加 hidden,那段时间其实已经关了。
+    if (modalEl && modalEl.classList.contains('show')) render();
   };
 
   function esc(s) {
@@ -459,8 +462,10 @@
       return false;
     }
     try {
-      await G.sendGroupTurnInner(text, attachments);
-      return true;
+      // inner 在「根本没开跑」时(没建群 / 没给角色分配模型 / 未登录 / 额度不足)显式返回 false,
+      // 这里原样透出:只弹一句提示不算数,调用方要靠返回值保住输入框里的草稿。
+      const started = await G.sendGroupTurnInner(text, attachments);
+      return started !== false;
     } finally {
       state._groupTurnActive = false;
     }
@@ -495,13 +500,14 @@
     return liveChat(chatId, chat);
   }
 
+  // 返回值:false = 这一轮没有发出去(纯提示),调用方必须保留输入框草稿;其余情况视为已发出
   G.sendGroupTurnInner = async function (text, attachments) {
     const group = G.activeGroup();
-    if (!group) { toast('请先在群聊设置中创建并进入一个群聊', true); setPhase(''); return; }
+    if (!group) { toast('请先在群聊设置中创建并进入一个群聊', true); setPhase(''); return false; }
     hydrateGroup(group);
     const members = enabledMembers(group);
-    if (!members.length) { toast('请先在「参与人数」里启用成员并分配模型', true); setPhase(''); return; }
-    if (!state.user) { openAuthModal(); return; }
+    if (!members.length) { toast('请先在「参与人数」里启用成员并分配模型', true); setPhase(''); return false; }
+    if (!state.user) { openAuthModal(); return false; }
     if (!quotaIsUnlimited(state.user.quota) && state.user.quota <= 0) {
       if (state.isGuest) {
         state.isGuestExpired = true;
@@ -510,7 +516,7 @@
       } else {
         toast('剩余次数不足，请联系管理员', true);
       }
-      return;
+      return false;
     }
     let chat = currentChat();
     if (!chat || !chat.id) chat = newChat();
@@ -888,6 +894,10 @@
   function openModal() {
     if (!modalEl) {
       modalEl = document.createElement('div');
+      // 以前它没有 id,而 G.reload 又按 id 去找它 —— 两边对不上,同步后重绘就一直是死代码。
+      // 补上 id(与里面的 group-modal-tabs / group-modal-title 同一套命名),元素可被寻址,
+      // 打开状态也能用选择器直接查。
+      modalEl.id = 'group-modal';
       modalEl.className = 'modal-mask hidden';
       modalEl.setAttribute('role', 'dialog');
       modalEl.setAttribute('aria-modal', 'true');

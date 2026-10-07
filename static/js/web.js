@@ -103,6 +103,15 @@
     } catch (e) {}
     return true;
   }
+  // 域名白名单是否启用。启用时即便境内 IP 段数据缺失,白名单内的域名仍可访问 ——
+  // 提示语要跟着说准,否则用户以为「什么都打不开」就放弃了。
+  function cnWhitelistOn() {
+    try {
+      const cfg = JSON.parse(localStorage.getItem('oc_cfg') || 'null');
+      if (cfg && typeof cfg.webCnWhitelistEnabled === 'boolean') return cfg.webCnWhitelistEnabled;
+    } catch (e) {}
+    return true;
+  }
   function isWebPath() {
     try { return location.pathname.replace(/\/+$/, '') === '/browser'; } catch (e) { return false; }
   }
@@ -213,7 +222,11 @@
     if (isPrivateHost(u.hostname)) return '内网地址不可访问（含本机与本站自身）';
     if (u.hostname.indexOf('.') < 0) return '无法识别的地址';
     if (u.username || u.password) return '地址不允许携带账号信息';
-    if (cnOnly() && !cnDataReady()) return '服务器缺少境内 IP 段数据，暂时无法访问任何站点（请联系管理员）';
+    if (cnOnly() && !cnDataReady()) {
+      return cnWhitelistOn()
+        ? '服务器缺少境内 IP 段数据，目前只有白名单内的域名可以访问（请联系管理员）'
+        : '服务器缺少境内 IP 段数据，暂时无法访问任何站点（请联系管理员）';
+    }
     return '';
   }
 

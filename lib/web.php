@@ -89,6 +89,101 @@ function tc_web_default_bookmarks() {
     );
 }
 
+// 「仅限访问中国 IP 网站」的域名白名单内置默认(管理端可用 settings.webCnWhitelist 覆盖)。
+// 存在的理由:开关按「域名解析结果是否落在境内 IP 段」放行,而有些站点解析出来就是境外 IP ——
+// 国内站用海外 CDN/DNS 时会这样,纯境外学术站更是如此。白名单里的域名不再看 IP,直接放行。
+// 匹配口径:填一级域名即放行其全部子域名(如 edu.cn 放行所有高校站),与站内子资源名单同款。
+// 列表按行书写,支持以 # 开头的注释行(整行注释),行内 # 之后的内容也当注释。
+// 顺序:第一批是纯学术站点(Google 学术 / PubMed / arXiv 等)——这是「仅限中国 IP」下
+// 最该保留的例外,读文献是主要用途;其后是常用国内站点,作为其解析落到境外时的兜底。
+function tc_web_default_cn_whitelist() {
+    return implode("\n", array(
+        '## 境外学术网站（纯学术用途，默认放行；填一级域名即放行其全部子域名）',
+        'scholar.google.com',
+        'pubmed.ncbi.nlm.nih.gov',
+        'ncbi.nlm.nih.gov',
+        'arxiv.org',
+        'doi.org',
+        'nature.com',
+        'science.org',
+        'sciencedirect.com',
+        'springer.com',
+        'ieeexplore.ieee.org',
+        'acm.org',
+        'jstor.org',
+        'researchgate.net',
+        'semanticscholar.org',
+        'webofscience.com',
+        'clarivate.com',
+        'scopus.com',
+        'elsevier.com',
+        'wiley.com',
+        'tandfonline.com',
+        'sagepub.com',
+        'openreview.net',
+        'biorxiv.org',
+        'medrxiv.org',
+        'ssrn.com',
+        'plos.org',
+        'cell.com',
+        'thelancet.com',
+        'bmj.com',
+        'aclweb.org',
+        '',
+        '## 常用国内网站（其解析结果有时落在境外 IP，按域名放行避免误拦）',
+        'baidu.com',
+        'bdstatic.com',
+        'qq.com',
+        'tencent.com',
+        'weixin.qq.com',
+        'alibaba.com',
+        'taobao.com',
+        'tmall.com',
+        'alipay.com',
+        'alicdn.com',
+        '1688.com',
+        'jd.com',
+        'bilibili.com',
+        'hdslb.com',
+        'zhihu.com',
+        'zhimg.com',
+        'weibo.com',
+        'sina.com.cn',
+        'sinaimg.cn',
+        'sohu.com',
+        'douban.com',
+        'xiaohongshu.com',
+        '163.com',
+        '126.com',
+        'iqiyi.com',
+        'youku.com',
+        'toutiao.com',
+        'douyin.com',
+        'kuaishou.com',
+        'meituan.com',
+        'ctrip.com',
+        '58.com',
+        'csdn.net',
+        'juejin.cn',
+        'cnblogs.com',
+        'oschina.net',
+        'gitee.com',
+        'segmentfault.com',
+        'nowcoder.com',
+        'cnki.net',
+        'wanfangdata.com.cn',
+        'cqvip.com',
+        'gov.cn',
+        'edu.cn',
+        'people.com.cn',
+        'xinhuanet.com',
+        'cctv.com',
+        '12306.cn',
+        'amap.com',
+        'aliyun.com',
+    ));
+}
+
 function tc_web_bookmarks_of($db) {
     $custom = isset($db['settings']['webBookmarks']) && is_array($db['settings']['webBookmarks']) ? $db['settings']['webBookmarks'] : array();
     $out = array();
@@ -604,10 +699,10 @@ function tc_web_guard($url) {
             $port = isset($t['port']) ? (int) $t['port'] : (strtolower((string) $t['scheme']) === 'https' ? 443 : 80);
             // ips 仍是原始目标(改写前)的解析结果:测试钩子只换真实连接目标,
             // 「是否中国 IP 站点」要按用户输入的那个域名判,否则测试里恒为境外。
-            return array('url' => $testBase . $path . (isset($p['query']) && $p['query'] !== '' ? '?' . $p['query'] : ''), 'resolve' => $t['host'] . ':' . $port . ':127.0.0.1', 'ips' => $ips);
+            return array('url' => $testBase . $path . (isset($p['query']) && $p['query'] !== '' ? '?' . $p['query'] : ''), 'resolve' => $t['host'] . ':' . $port . ':127.0.0.1', 'ips' => $ips, 'host' => $host);
         }
     }
-    return array('url' => $url, 'resolve' => $g['host'] . ':' . $g['port'] . ':' . $pinIp, 'ips' => $ips);
+    return array('url' => $url, 'resolve' => $g['host'] . ':' . $g['port'] . ':' . $pinIp, 'ips' => $ips, 'host' => $host);
 }
 
 // 把已经写进输出缓冲的内容推给浏览器并断开与 PHP 的关系。
@@ -626,11 +721,67 @@ function tc_web_concurrency_of() {
     return max(0, min(16, $v));
 }
 
-// 「仅限中国 IP 网站」的目标判定:$guard 来自 tc_web_guard,已带解析结果。// 域名解析出的多个 IP 里只要有一个在国内就放行(国内大站常见国内 CDN + 海外节点混合解析),
-// 直接填 IP 的情况按该 IP 判定。地址段数据缺失时一律拒绝 —— 开关是「默认开启」的安全边界,
-// 数据读不到时放行等于悄悄把边界撤掉。
-function tc_web_cn_target_ok($guard) {
+// ============ 「仅限中国 IP 网站」的域名白名单 ============
+// 数据流:管理端在后台填一份多行文本(settings.webCnWhitelist),这里解析成条目数组,
+// 逐跳判定时优先于 IP 归属。文本为空时回落到内置默认(见 tc_web_default_cn_whitelist)。
+
+// 是否启用白名单(默认开启,与 webCnOnly 的缺省口径一致:缺字段即开)。
+function tc_web_cn_whitelist_on($db) {
+    $s = isset($db['settings']) && is_array($db['settings']) ? $db['settings'] : array();
+    return !array_key_exists('webCnWhitelistEnabled', $s) || !empty($s['webCnWhitelistEnabled']);
+}
+
+// 取出白名单原文:未配置(空串/空白)时用内置默认。返回原文而非条目数组,
+// 是为了让管理端能把注释行原样读回编辑。
+function tc_web_cn_whitelist_text($db) {
+    $s = isset($db['settings']) && is_array($db['settings']) ? $db['settings'] : array();
+    $raw = isset($s['webCnWhitelist']) && is_string($s['webCnWhitelist']) ? $s['webCnWhitelist'] : '';
+    return trim($raw) === '' ? tc_web_default_cn_whitelist() : $raw;
+}
+
+// 直接拿到可用的条目数组:关着开关就是空数组(等于退回纯 IP 判定)。
+function tc_web_cn_whitelist_of($db) {
+    return tc_web_cn_whitelist_on($db) ? tc_web_cn_whitelist_entries(tc_web_cn_whitelist_text($db)) : array();
+}
+
+// 把用户填的一行规范化成域名(实现与清洗同源,见 lib/core.php 的 tc_web_cn_whitelist_norm;
+// 放在 core.php 是因为设置归一化要用它,而那时 web.php 未必被加载)。
+
+// 解析白名单文本为条目数组:逐行去注释(整行 # 与行内 #)、去空白、规范化、去重。
+function tc_web_cn_whitelist_entries($text) {
+    $out = array();
+    foreach (preg_split('/\r\n|\r|\n/', (string) $text) as $line) {
+        $hash = strpos($line, '#');
+        if ($hash !== false) $line = substr($line, 0, $hash);
+        $dom = tc_web_cn_whitelist_norm($line);
+        if ($dom === '') continue;
+        $out[$dom] = true;
+        if (count($out) >= 1000) break;
+    }
+    return array_keys($out);
+}
+
+// 主机是否命中白名单:填一级域名放行其全部子域名(baidu.com 放行 www.baidu.com)。
+// 只按「.」边界做后缀匹配,避免 notbaidu.com 被 baidu.com 误命中。
+function tc_web_host_in_list($host, $entries) {
+    $host = strtolower(trim((string) $host, '[]'));
+    if ($host === '' || !is_array($entries) || !$entries) return false;
+    foreach ($entries as $e) {
+        if ($host === $e) return true;
+        $suffix = '.' . $e;
+        if (strlen($host) > strlen($suffix) && substr($host, -strlen($suffix)) === $suffix) return true;
+    }
+    return false;
+}
+
+// 「仅限中国 IP 网站」的目标判定:$guard 来自 tc_web_guard,已带解析结果与主机名。
+// 顺序:白名单命中即放行(不看 IP);否则按 IP 归属判 —— 域名解析出的多个 IP 里只要有一个
+// 在国内就放行(国内大站常见国内 CDN + 海外节点混合解析),直接填 IP 的情况按该 IP 判定。
+// 地址段数据缺失时一律拒绝 —— 开关是「默认开启」的安全边界,数据读不到时放行等于悄悄撤掉边界;
+// 但白名单是显式放行,放在这一判定之前,免得服务端缺数据时把名单里的站也一起挡掉。
+function tc_web_cn_target_ok($guard, $whitelist = array()) {
     if (!is_array($guard)) return false;
+    if (!empty($guard['host']) && tc_web_host_in_list($guard['host'], $whitelist)) return true;
     if (!tc_web_cn_data_ready()) return false;
     $ips = isset($guard['ips']) && is_array($guard['ips']) ? $guard['ips'] : array();
     if (!$ips && !empty($guard['ip'])) $ips = array($guard['ip']);
@@ -794,6 +945,9 @@ function tc_web_fetch($url, $userId, $opts = array()) {
     // 「仅限访问中国 IP 网站」:默认开启(见设置 webCnOnly)。判定放在闸门之后、出网之前,
     // 每一跳都判 —— 只判首跳会被「国内站 302 到境外」绕过。
     $cnOnly = !isset($opts['cnOnly']) || !empty($opts['cnOnly']);
+    // 域名白名单条目(由调用方从 settings 读出并解析好):命中的域名不看 IP 直接放行,
+    // 用于「国内站的解析落在境外」「纯学术站本身就在境外」这两种按 IP 判会被误拦的情况。
+    $cnWhitelist = isset($opts['cnWhitelist']) && is_array($opts['cnWhitelist']) ? $opts['cnWhitelist'] : array();
     // 子资源放宽:调用方已确认这个资源属于一个**已通过闸门的境内文档**(签名来源令牌,见
     // tc_web_origin_token)。此时只对「非境内主机」放宽,且**只放宽非文档类型** —— 理由是
     // 子资源按定义是页面的一部分(国内站引用海外 CDN 极常见),而 HTML 文档本身仍然必须
@@ -807,13 +961,15 @@ function tc_web_fetch($url, $userId, $opts = array()) {
     for ($hop = 0; $hop <= TC_WEB_MAX_HOPS; $hop++) {
         $guard = tc_web_guard($cur);
         if (!$guard) return array('ok' => false, 'error' => '该地址不允许访问(仅支持公网 http/https 地址)', 'code' => 400);
-        $hostIsCn = tc_web_cn_target_ok($guard);
+        $hostIsCn = tc_web_cn_target_ok($guard, $cnWhitelist);
         if ($cnOnly && !$hostIsCn && !$cnRelaxed) {
             // 区分「这个站不在境内」和「境内网段数据根本没加载上」:后者会让所有站点
             // 一起被拒(开关默认开着),报错说成「该站点不在允许范围内」就没法排查了。
             $why = tc_web_cn_data_ready()
                 ? '本站已开启「仅限访问中国 IP 网站」,该站点不在允许范围内'
                 : '本站开启了「仅限访问中国 IP 网站」,但服务器缺少境内 IP 段数据(lib/cn-ip.bin),无法判定该站点';
+            // 白名单开着时补一句提示:用户与管理员能看到「这条路本来就有一条」,而不是以为功能坏了
+            if ($cnWhitelist) $why .= '(可请管理员把该域名加入后台「在线浏览器 → 域名白名单」)';
             return array('ok' => false, 'error' => $why, 'code' => 403);
         }
         if (!function_exists('curl_init')) return array('ok' => false, 'error' => '服务器未启用 cURL,无法访问外部网站', 'code' => 500);
@@ -1271,7 +1427,7 @@ function tc_web_prefetch_urls($html, $base, $limit)
 // 并行预取一组子资源并写进本地缓存。用 curl_multi 让多个 TLS 握手与往返同时进行 ——
 // 串行抓 20 张图的耗时约等于 20 次握手之和,并行后约为最慢的那一个。
 // 只在参数允许(无 cookie 依赖)时调用;任何单项失败都静默跳过,不影响页面本身。
-function tc_web_prefetch_warm($urls, $userId, $cnOnly, $concurrency, $cnAllowAssets = false, $trafficLimitMb = 0)
+function tc_web_prefetch_warm($urls, $userId, $cnOnly, $concurrency, $cnAllowAssets = false, $trafficLimitMb = 0, $cnWhitelist = array())
 {
     if (!is_array($urls) || !$urls || !function_exists('curl_multi_init')) return 0;
     // 预热同样占用本站出口:超限用户不再预热(否则「拒绝抓取」会被预热路线绕过)。
@@ -1283,7 +1439,7 @@ function tc_web_prefetch_warm($urls, $userId, $cnOnly, $concurrency, $cnAllowAss
     $active = array();
     $pending = $urls;
     $deadline = time() + 8;      // 预算是「让首屏快点出来」,不能反过来把页面拖住
-    $start = function ($url) use ($multi, $userId, &$active, $cnOnly, $cnAllowAssets) {
+    $start = function ($url) use ($multi, $userId, &$active, $cnOnly, $cnAllowAssets, $cnWhitelist) {
         $guard = tc_web_guard($url);
         if (!$guard) return null;
         // 与 tc_web_serve 同样的放宽口径:非境内主机但在本用户的子资源白名单里(说明它被
@@ -1294,7 +1450,7 @@ function tc_web_prefetch_warm($urls, $userId, $cnOnly, $concurrency, $cnAllowAss
             $h = @parse_url($url, PHP_URL_HOST);
             if (is_string($h) && $h !== '' && tc_web_cn_asset_ok($userId, $h)) $relaxed = true;
         }
-        if ($cnOnly && !$relaxed && !tc_web_cn_target_ok($guard)) return null;
+        if ($cnOnly && !$relaxed && !tc_web_cn_target_ok($guard, $cnWhitelist)) return null;
         $buf = '';
         $ctype = '';
         $status = 0;
@@ -1449,17 +1605,20 @@ function tc_web_serve($kind) {
     // 页面与子资源都要过同一套判定(用户还在、功能还开着、这个账号还有权限)。
     // 子资源一次页面加载有几十上百个,但「不读库」不等于「不判」:票据里带着 uid,
     // 按 uid 复核一次即可,省掉的是重复读结构化数据的开销,不是判定本身。
-    // 顺带把后续几处要用的设置读出来:并发上限、cnOnly、是否放宽国内页引用的海外资源、每日流量上限。
+    // 顺带把后续几处要用的设置读出来:并发上限、cnOnly、是否放宽国内页引用的海外资源、
+    // 每日流量上限、域名白名单。白名单读不到库(setting 缺省)时回落到内置默认。
     $cnOnly = tc_web_cn_only_default();
     $cnAllowAssets = true;
     $trafficLimitMb = 0;
+    $cnWhitelist = tc_web_cn_whitelist_entries(tc_web_default_cn_whitelist());
     $allowed = false;
     try {
-        tc_with_db(false, function ($db) use ($uid, &$allowed, &$cnOnly, &$cnAllowAssets, &$trafficLimitMb) {
+        tc_with_db(false, function ($db) use ($uid, &$allowed, &$cnOnly, &$cnAllowAssets, &$trafficLimitMb, &$cnWhitelist) {
             $cnOnly = tc_web_cn_only_on($db);
             $s = isset($db['settings']) && is_array($db['settings']) ? $db['settings'] : array();
             $cnAllowAssets = !array_key_exists('webCnAllowAssets', $s) || !empty($s['webCnAllowAssets']);
             $trafficLimitMb = tc_web_traffic_limit_mb($db);
+            $cnWhitelist = tc_web_cn_whitelist_of($db);
             $GLOBALS['_tc_web_concurrency'] = (int) (isset($db['settings']['webConcurrency']) ? $db['settings']['webConcurrency'] : 6);
             foreach ($db['users'] as $u) {
                 if ((string) $u['id'] !== $uid) continue;
@@ -1546,6 +1705,7 @@ function tc_web_serve($kind) {
             'range' => isset($_SERVER['HTTP_RANGE']) ? (string) $_SERVER['HTTP_RANGE'] : '',
             'cnOnly' => $cnOnly,
             'cnRelaxed' => $cnRelaxed,
+            'cnWhitelist' => $cnWhitelist,
             'kind' => $kind,
             'trafficLimitMb' => $trafficLimitMb,
         ));
@@ -1605,7 +1765,7 @@ function tc_web_serve($kind) {
         $budget = tc_web_concurrency_of();
         if ($kind === 'page' && $budget > 0) {
             $warm = tc_web_prefetch_urls($html, $base, $budget * 3);
-            if ($warm) tc_web_prefetch_warm($warm, $uid, $cnOnly, $budget, $cnAllowAssets, $trafficLimitMb);
+            if ($warm) tc_web_prefetch_warm($warm, $uid, $cnOnly, $budget, $cnAllowAssets, $trafficLimitMb, $cnWhitelist);
         }
         exit;
     }
@@ -1750,10 +1910,12 @@ function tc_web_extract($url, $uid) {
     // 每日流量上限同理:阅读模式/AI 总结的服务端取数也走同一出口,必须与页面抓取同一口径。
     $cnOnly = tc_web_cn_only_default();
     $trafficLimitMb = 0;
+    $cnWhitelist = tc_web_cn_whitelist_entries(tc_web_default_cn_whitelist());
     try {
-        tc_with_db(false, function ($db) use (&$cnOnly, &$trafficLimitMb) {
+        tc_with_db(false, function ($db) use (&$cnOnly, &$trafficLimitMb, &$cnWhitelist) {
             $cnOnly = tc_web_cn_only_on($db);
             $trafficLimitMb = tc_web_traffic_limit_mb($db);
+            $cnWhitelist = tc_web_cn_whitelist_of($db);
         });
     } catch (Throwable $e) {
         // 读不到库就维持默认值:宁可严一点,也不要因为一次读库失败而放行境外站点
@@ -1761,7 +1923,7 @@ function tc_web_extract($url, $uid) {
     if (!tc_web_traffic_ok($uid, $trafficLimitMb)) {
         return array('ok' => false, 'error' => '今日在线浏览器流量已用完（上限 ' . $trafficLimitMb . ' MB），明天恢复；管理员可在后台调整', 'code' => 429);
     }
-    $res = tc_web_fetch($url, $uid, array('cnOnly' => $cnOnly, 'kind' => 'page', 'trafficLimitMb' => $trafficLimitMb));
+    $res = tc_web_fetch($url, $uid, array('cnOnly' => $cnOnly, 'cnWhitelist' => $cnWhitelist, 'kind' => 'page', 'trafficLimitMb' => $trafficLimitMb));
     if (empty($res['ok'])) return $res;
     $charset = tc_web_charset($res['body'], $res['ctype']);
     $html = ($charset !== '' && $charset !== 'utf-8' && $charset !== 'utf8') ? tc_web_to_utf8($res['body'], $charset) : $res['body'];

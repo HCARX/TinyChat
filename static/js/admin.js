@@ -4881,6 +4881,8 @@ document.addEventListener('click', async (e) => {
         browserEnabled: $('web-enabled').checked,
         webCnOnly: $('web-cn-only').checked,
         webCnAllowAssets: $('web-cn-allow-assets').checked,
+        webCnWhitelistEnabled: $('web-cn-whitelist-enabled').checked,
+        webCnWhitelist: $('web-cn-whitelist').value,
         webConcurrency: Number($('web-concurrency').value || 6),
         webAiDailyLimit: Number($('web-ai-limit').value || 0),
         webDailyTrafficMb: Number($('web-traffic-mb').value || 0),
@@ -5352,6 +5354,15 @@ async function loadWebSettings() {
   if ($('web-enabled')) $('web-enabled').checked = s.browserEnabled !== false;
   if ($('web-cn-only')) $('web-cn-only').checked = s.webCnOnly !== false;
   if ($('web-cn-allow-assets')) $('web-cn-allow-assets').checked = s.webCnAllowAssets !== false;
+  if ($('web-cn-whitelist-enabled')) $('web-cn-whitelist-enabled').checked = s.webCnWhitelistEnabled !== false;
+  // 白名单留空表示「用内置默认」,此时把内置默认填进输入框 —— 让管理员看到实际生效的名单,
+  // 否则输入框空空如也、却拦下了预期外的域名(默认名单在服务端),无从排查。
+  if ($('web-cn-whitelist')) {
+    const wl = typeof s.webCnWhitelist === 'string' ? s.webCnWhitelist : '';
+    $('web-cn-whitelist').value = wl.trim() !== ''
+      ? wl
+      : (typeof s.webCnWhitelistDefault === 'string' ? s.webCnWhitelistDefault : '');
+  }
   if ($('web-concurrency')) $('web-concurrency').value = Number(s.webConcurrency != null ? s.webConcurrency : 6);
   if ($('web-ai-limit')) $('web-ai-limit').value = Number(s.webAiDailyLimit != null ? s.webAiDailyLimit : 50);
   if ($('web-traffic-mb')) $('web-traffic-mb').value = Number(s.webDailyTrafficMb != null ? s.webDailyTrafficMb : 500);

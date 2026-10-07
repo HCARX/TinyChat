@@ -773,9 +773,11 @@
     if (!S.open) return;
     if (e.key !== 'Escape') return;
     if (document.querySelector('.oc-confirm-mask:not(.hidden)')) return;
-    // 站内下拉的菜单开着时,这个 Esc 归它:它是在 setTimeout 里才把捕获监听挂上的,
-    // 排在本科听器之后,所以这里必须让路 —— 抢过来的话用户的 Esc 会一步退到上一个视图,
-    // 菜单却还浮在上面。
+    // 站内下拉的菜单开着时,这个 Esc 归它(它的捕获监听在菜单进 DOM 时就挂上了,
+    // 但注册排在本科听器之后)。这里必须让路:抢过来的话用户的 Esc 会一步退到上一个视图,
+    // 菜单却还浮在上面。让路的前提是它确实接得住 —— 见 components.js 里 openSelect
+    // 为何把那条监听的注册从 setTimeout 里挪出来(晚一档就成了「让路的人让了、该接的没接住」,
+    // 整屏被别处的 Esc 关掉而菜单还浮着)。
     if (document.querySelector('.oc-menu')) return;
     if (S.view === 'list') return;
     e.stopImmediatePropagation();

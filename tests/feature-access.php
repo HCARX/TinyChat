@@ -12,6 +12,8 @@
  */
 // core.php 已经 require 了 features.php(设置归一化用到它),这里不要再 require 一次
 require __DIR__ . '/../lib/core.php';
+// 域名白名单的匹配/闸门判定在 web.php(它自己 require core.php 与 proxy.php)
+require_once __DIR__ . '/../lib/web.php';
 
 $fail = 0;
 $ok = function ($m) { echo "  ✓ $m\n"; };
@@ -235,6 +237,55 @@ $check('tc_cn_ip_contains 对空表返回 false(失败关闭)', (function () {
     // 直接调内部判定:空表 + 空计数
     return tc_cn_ip_in_table(pack('N', 0x01010101), '', 0) === false;
 })());
+
+echo "== 15. 域名白名单:文本清洗 ==\n";
+// 后台白名单是自由文本(每行一个域名 + # 注释)。清洗必须「规范化能修的、丢弃修不了的」,
+// 且保留注释行 —— 前两者决定名单是否可靠,后者决定管理员能否把名单读回来接着改。
+$wlRaw = "## 学术站\n Scholar.Google.COM \nhttps://pubmed.ncbi.nlm.nih.gov/abc?q=1\n*.arxiv.org\nbad line!\ntest\n百度.com\nbaidu.com\nBAIDU.com\n## 国内站\nfoo.baidu.com # 行内注释\n";
+$wlClean = tc_web_cn_whitelist_clean($wlRaw);
+$wlCleanLines = explode("\n", $wlClean);
+$check('注释行原样保留', in_array('## 学术站', $wlCleanLines, true) && in_array('## 国内站', $wlCleanLines, true));
+$check('大小写归一为小写', in_array('scholar.google.com', $wlCleanLines, true));
+$check('整条 URL 取主机名、丢掉路径与查询', in_array('pubmed.ncbi.nlm.nih.gov', $wlCleanLines, true));
+$check('前导 *. 通配被规范化掉', in_array('arxiv.org', $wlCleanLines, true));
+$check('同一域名的重复写法只留一条', count(array_keys($wlCleanLines, 'baidu.com', true)) === 1);
+$check('非法行(带空格/无点)被丢弃', strpos($wlClean, 'bad line!') === false && !in_array('test', $wlCleanLines, true));
+$check('行内注释只取域名部分', in_array('foo.baidu.com', $wlCleanLines, true) && strpos($wlClean, '行内注释') === false);
+$check('空行的无效域名不落库', tc_web_cn_whitelist_norm('') === '' && tc_web_cn_whitelist_norm('  ') === '');
+$check('带端口的写法取主机名', tc_web_cn_whitelist_norm('example.com:8080') === 'example.com');
+$check('清洗结果里没有空行(避免文本被撑大)', strpos($wlClean, "\n\n") === false);
+
+echo "== 16. 域名白名单:内置默认与命中判定 ==\n";
+$wlDefault = tc_web_default_cn_whitelist();
+$wlDefEntries = tc_web_cn_whitelist_entries($wlDefault);
+$check('内置默认非空', count($wlDefEntries) > 20, '实测 ' . count($wlDefEntries));
+$check('内置默认每个条目本身就是规范形式(不会在保存时被清洗掉)',
+    count(array_filter($wlDefEntries, function ($d) { return tc_web_cn_whitelist_norm($d) !== $d; })) === 0);
+$check('默认第一批是纯学术站(Google 学术打头)', $wlDefEntries[0] === 'scholar.google.com');
+$check('默认含 PubMed', in_array('pubmed.ncbi.nlm.nih.gov', $wlDefEntries, true));
+$check('默认含常用国内站(百度/知网)', in_array('baidu.com', $wlDefEntries, true) && in_array('cnki.net', $wlDefEntries, true));
+$check('一级域名放行其二级域名', tc_web_host_in_list('www.baidu.com', $wlDefEntries) === true);
+$check('多级子域也放行', tc_web_host_in_list('tieba.baidu.com', $wlDefEntries) === true);
+$check('.edu.cn 放行所有高校子域', tc_web_host_in_list('www.tsinghua.edu.cn', $wlDefEntries) === true);
+$check('域名后缀相同但非子域的不误放行', tc_web_host_in_list('notbaidu.com', $wlDefEntries) === false);
+$check('用子域当条目不放行父域', tc_web_host_in_list('google.com', array('scholar.google.com')) === false);
+$check('名单外的境外站不命中', tc_web_host_in_list('example.com', $wlDefEntries) === false);
+$check('空名单不命中任何主机', tc_web_host_in_list('baidu.com', array()) === false);
+
+echo "== 17. 域名白名单:开关与闸门整合 ==\n";
+$wlDbOn = array('settings' => array('webCnWhitelist' => "## x\nbaidu.com\n", 'webCnWhitelistEnabled' => true));
+$wlDbOff = array('settings' => array('webCnWhitelist' => "## x\nbaidu.com\n", 'webCnWhitelistEnabled' => false));
+$check('开关开启时取出条目', tc_web_cn_whitelist_of($wlDbOn) === array('baidu.com'));
+$check('开关关闭时条目为空(退回纯 IP 判定)', tc_web_cn_whitelist_of($wlDbOff) === array());
+$check('缺字段时默认启用', tc_web_cn_whitelist_of(array('settings' => array())) !== array());
+$check('缺字段时默认名单生效(百度仍放行)', tc_web_host_in_list('www.baidu.com', tc_web_cn_whitelist_of(array('settings' => array()))) === true);
+// 闸门:一个解析在境外的域名,白名单里就放行、不在就拒绝 —— 这正是「境外访问也是境外 IP」的修法。
+$overseasGuard = array('host' => 'scholar.google.com', 'ips' => array('142.250.72.14'));
+$check('境外 IP 且不在白名单 => 拒绝', tc_web_cn_target_ok($overseasGuard, array()) === false);
+$check('境外 IP 但在白名单 => 放行', tc_web_cn_target_ok($overseasGuard, $wlDefEntries) === true);
+$otherGuard = array('host' => 'example.com', 'ips' => array('93.184.216.34'));
+$check('不在白名单的境外站仍拒绝', tc_web_cn_target_ok($otherGuard, $wlDefEntries) === false);
+$check('guard 缺 host 时不因白名单误放行', tc_web_cn_target_ok(array('ips' => array('8.8.8.8')), $wlDefEntries) === false);
 
 echo "\n" . ($fail === 0 ? '✓ 拓展功能可见性 / 中国 IP 自检通过' : '✗ 拓展功能可见性 / 中国 IP 自检未通过(' . $fail . ' 项)') . "\n";
 exit($fail === 0 ? 0 : 1);

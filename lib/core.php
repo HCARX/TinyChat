@@ -6,7 +6,7 @@ if (!defined('TC_ROOT')) {
     define('TC_ROOT', dirname(__DIR__));
 }
 
-define('TC_VERSION', '2.0.147');
+define('TC_VERSION', '2.0.149');
 // 单篇笔记正文上限(字符)。超出时接口明确报错而不是静默截断。
 define('TC_NOTE_MAX_CHARS', 500000);
 // 敏感词库上限(去重后的条数)。达到上限后新增词条被丢弃,单个词条本身不截断。
@@ -304,6 +304,12 @@ $TC_SETTINGS_DEFAULTS = array(
     // 用户看到的就是「百度都打不开」。判定改为:导航请求(整页)按中国 IP 严格判,
     // 子资源只要它的**来源页**是中国站就放行(见 tc_web_fetch 的 originCn 参数)。
     'webCnAllowAssets' => true,
+    // 域名白名单:开启后,名单内的域名不再按 IP 归属判定,直接放行。
+    // 动机:有些站点解析出来就是境外 IP —— 国内站用海外 CDN/DNS 时会这样,境外学术站
+    // (Google 学术 / PubMed / arXiv)更是如此,只按 IP 判会连它们一起拒。空文本用内置默认
+    // (见 tc_web_default_cn_whitelist),列表支持以 # 开头的注释行。
+    'webCnWhitelistEnabled' => true,
+    'webCnWhitelist' => '',
     // 在线浏览器每用户每日出网流量上限(MB,0 = 不限)。代理抓取的字节都算在本站出口,
     // 这里按用户记账:同一用户当天抓取的字节(含页面与全部子资源)超过上限即拒绝。
     'webDailyTrafficMb' => 500,
@@ -1022,6 +1028,68 @@ function tc_model_meta_seed_builtin(&$db) {
     return $n;
 }
 
+// 域名白名单文本的解析/清洗放在 core.php:tc_normalize_settings 要用它,而 core.php 在
+// 「只加载 core+api」的上下文(自检脚本)里也会被调用,不能依赖 web.php。匹配逻辑
+// (后缀放行、开关判定)在 web.php,这里只管「文本 -> 规范化文本」这一段。
+//
+// 把一行规范化成域名。容忍几种手滑写法:带协议/路径/端口的整条 URL、前导 *. 通配、
+// 前后多余的点。返回空串表示这一行不是合法域名,由调用方丢弃。中文域名转 punycode 再存。
+function tc_web_cn_whitelist_norm($line) {
+    $s = strtolower(trim((string) $line));
+    if ($s === '') return '';
+    if (strpos($s, '://') !== false) {
+        $p = @parse_url($s);
+        $s = $p && !empty($p['host']) ? (string) $p['host'] : '';
+    } else {
+        $s = (string) preg_replace('~[/?#].*$~', '', $s);   // 去掉路径/查询/片段
+        $s = (string) preg_replace('~:\d+$~', '', $s);       // 去掉端口
+    }
+    if (strpos($s, '*.') === 0) $s = substr($s, 2);
+    $s = trim($s, " \t.[]");
+    if ($s === '') return '';
+    if (function_exists('idn_to_ascii') && preg_match('/[^\x00-\x7f]/', $s)) {
+        $a = @idn_to_ascii($s, IDNA_DEFAULT, INTL_IDNA_VARIANT_UTS46);
+        if (is_string($a) && $a !== '') $s = strtolower($a);
+    }
+    if (!preg_match('#^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$#', $s)) return '';
+    return $s;
+}
+
+// 清洗整份白名单文本:保留以 # 开头的注释行(管理端要能读回编辑),逐行规范化域名、
+// 丢弃非法行、按域名去重。上限 600 行 / 32KB —— 名单要拼进每个请求的逐跳判定,
+// 无上限会让设置与内存都被撑大;超出部分截断而不是拒绝,保存不会因超长整份失败。
+function tc_web_cn_whitelist_clean($text) {
+    $src = str_replace(array("\r\n", "\r"), "\n", (string) $text);
+    $out = array();
+    $seen = array();
+    foreach (explode("\n", $src) as $line) {
+        if (count($out) >= 600) break;
+        $trim = trim($line);
+        if ($trim === '') continue;
+        if ($trim[0] === '#') {
+            // 注释行原样保留(仅限长)。这里不能借 tc_utf_cut —— 它在 api.php 里,
+            // 而本函数所在的 core.php 在「只加载 core」的上下文也会被调用。
+            if (preg_match('/^.{0,200}/us', $trim, $cm)) $trim = $cm[0];
+            $out[] = $trim;
+            continue;
+        }
+        $hash = strpos($trim, '#');
+        if ($hash !== false) $trim = trim(substr($trim, 0, $hash));   // 行内注释:只取域名部分
+        $dom = tc_web_cn_whitelist_norm($trim);
+        if ($dom === '' || isset($seen[$dom])) continue;
+        $seen[$dom] = true;
+        $out[] = $dom;
+    }
+    $text = implode("\n", $out);
+    if (strlen($text) > 32768) {
+        // 按行截断,不要切在半个域名中间
+        $cut = substr($text, 0, 32768);
+        $nl = strrpos($cut, "\n");
+        $text = $nl === false ? '' : substr($cut, 0, $nl);
+    }
+    return $text;
+}
+
 function tc_normalize_settings($raw) {
     global $TC_SETTINGS_DEFAULTS;
     $s = array_merge($TC_SETTINGS_DEFAULTS, is_array($raw) ? $raw : array());
@@ -1186,6 +1254,9 @@ function tc_normalize_settings($raw) {
     // 仅限中国 IP 站点:默认开启(旧库缺字段也按开启);并发上限 1~16
     $s['webCnOnly'] = !array_key_exists('webCnOnly', $s) || !empty($s['webCnOnly']);
     $s['webCnAllowAssets'] = !array_key_exists('webCnAllowAssets', $s) || !empty($s['webCnAllowAssets']);
+    // 域名白名单:开关默认开启(缺字段即开);文本清洗后落库,空文本表示「用内置默认」
+    $s['webCnWhitelistEnabled'] = !array_key_exists('webCnWhitelistEnabled', $s) || !empty($s['webCnWhitelistEnabled']);
+    $s['webCnWhitelist'] = tc_web_cn_whitelist_clean(isset($s['webCnWhitelist']) ? $s['webCnWhitelist'] : '');
     $s['webDailyTrafficMb'] = min(1024000, max(0, (int) (isset($s['webDailyTrafficMb']) ? $s['webDailyTrafficMb'] : 500)));
     $s['webConcurrency'] = min(16, max(1, (int) (isset($s['webConcurrency']) ? $s['webConcurrency'] : 6) ?: 6));
     // 拓展功能的访问级别与名单(在线浏览器 / AI 笔记 / 在线聊天 / 在线工具箱)
@@ -1428,6 +1499,9 @@ function tc_admin_settings_public($s, $forDemo = false) {
     }
     $out['webSearchAllowUser'] = !empty($out['webSearchAllowUser']);
     $out['mineruAllowUser'] = !empty($out['mineruAllowUser']);
+    // 域名白名单留空 = 用内置默认。把内置原文一并下发,管理端输入框才能显示「实际生效的名单」。
+    // web.php 未必加载(见该模块顶部说明),故用 function_exists 兜底成空串。
+    $out['webCnWhitelistDefault'] = function_exists('tc_web_default_cn_whitelist') ? tc_web_default_cn_whitelist() : '';
     return $out;
 }
 

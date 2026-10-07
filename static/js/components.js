@@ -249,11 +249,20 @@
       window.removeEventListener('scroll', onScroll, true);
       window.removeEventListener('resize', onResize);
     };
-    // 捕获阶段注册:保证先于 OCUI 的弹窗 Esc(document 冒泡)触发
+    // Esc 就地注册(捕获阶段,保证先于 OCUI 的弹窗 Esc —— 那是 document 冒泡)。
+    // **不能挪进下面那个 setTimeout**:菜单一旦在 DOM 里,Esc 就归它。排在后面的处理器
+    // 会据此让路(工具箱就是:菜单开着时把这个键交给菜单,自己不动视图),可监听晚挂上
+    // 哪怕一档,那一下就没有人接手 —— 让路的一方什么都没做,别处的 Esc(关弹窗栈顶)
+    // 却把整屏关了,菜单还浮在上面。CI 的 headless Linux 上输过这场 0ms 竞速。
+    document.addEventListener('keydown', onKey, true);
     setTimeout(() => {
-      // 冒泡阶段监听：菜单项的 mousedown/click 通过 stopPropagation 阻止关闭
+      // 冒泡阶段监听：菜单项的 mousedown/click 通过 stopPropagation 阻止关闭。
+      // 这几项延后一档,是为了别让「打开菜单的那次 mousedown」立刻又把它关掉;而打开
+      // 菜单的键只可能是 Enter / 空格,Esc 不是,所以上面那条不需要跟着延后。
+      // 延后就有「这一档还没到,菜单已经被关掉」的可能(_cleanup 已经把监听摘过一遍,
+      // 这里再挂上去就永远没人摘了):不是当前那个菜单什么都不做。
+      if (openMenu !== menu) return;
       document.addEventListener('mousedown', onDoc);
-      document.addEventListener('keydown', onKey, true);
       window.addEventListener('scroll', onScroll, true);
       window.addEventListener('resize', onResize);
     }, 0);

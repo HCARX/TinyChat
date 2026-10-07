@@ -731,6 +731,12 @@ assert_has "演示管理员看到的额度排行已匿名" "$(curl -s "$BASE/api
 # 演示管理员保存供应商时必须保留既有密钥(接口不下发密钥,提交里 keys 为空也不能清空)
 curl -s -X POST "$BASE/api/admin/providers/$PROV" -H "$DAUTH" -H "Content-Type: application/json" -d '{"name":"Demo Renamed","apiKey":"","keys":[]}' > /dev/null
 assert_contains "演示改供应商后密钥仍在" "$(curl -s "$BASE/api/providers" -H "$AUTH")" '"hasKey":true'
+# 反过来:演示管理员**新增**供应商时是手打了一把 Key 的,不能连它一起跳过
+# (曾经的 bug:跳过密钥处理把新明文也丢了,提交里明明填了 Key 却报「API Key 不能为空」)
+DEMONEW=$(curl -s -X POST "$BASE/api/providers" -H "$DAUTH" -H "Content-Type: application/json" -d '{"name":"DemoNew","baseUrl":"http://127.0.0.1:'"$MOCK_PORT"'/v1","apiKey":"sk-demo-new","apiFormat":"chat","models":[{"id":"mock-model"}]}')
+assert_contains "演示管理员可新增带 Key 的供应商" "$DEMONEW" '"name":"DemoNew"'
+# 接口对演示身份不下发密钥,但 hasKey 必须为真 —— 证明新填的 Key 已收下并加密落库
+assert_contains "演示新增的密钥确实落库" "$DEMONEW" '"hasKey":true'
 curl -s -X POST "$BASE/api/admin/providers/$PROV" -H "$AUTH" -H "Content-Type: application/json" -d '{"name":"MockAI"}' > /dev/null
 
 # 已有用户可随时转为/取消演示管理员(不限于创建时)
@@ -2046,6 +2052,26 @@ assert_contains "公共配置暴露境内 IP 段数据就绪标记" "$(curl -s "
 # 后者供前台展示今日剩余流量。
 assert_contains "公共配置暴露放行海外静态资源开关" "$(curl -s "$BASE/api/config")" '"webCnAllowAssets":'
 assert_contains "公共配置暴露每日流量上限" "$(curl -s "$BASE/api/config")" '"webDailyTrafficMb":'
+# 域名白名单:开关要下发(前台据此把「服务器缺境内 IP 数据」的提示说准),名单本身只给管理员。
+assert_contains "公共配置暴露域名白名单开关" "$(curl -s "$BASE/api/config")" '"webCnWhitelistEnabled":'
+WSET=$(curl -s "$BASE/api/admin/settings" -H "$AUTH")
+assert_contains "后台设置下发白名单内置默认(供输入框回显)" "$WSET" '"webCnWhitelistDefault"'
+assert_has "内置默认白名单含 Google 学术" "$WSET" 'scholar.google.com'
+# 白名单文本的后端清洗:注释行保留、非法行丢弃、大小写与整条 URL 归一 —— 脏数据不能落库
+cat > "$TMP/web-wl.json" <<'EOF'
+{"webCnWhitelist":"## academic\n Scholar.Google.COM \nhttps://pubmed.ncbi.nlm.nih.gov/x?q=1\nbad line!\n## domestic\nbaidu.com\n"}
+EOF
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/web-wl.json" > /dev/null
+WL=$(curl -s "$BASE/api/admin/settings" -H "$AUTH")
+assert_has "白名单注释行落库保留" "$WL" '## academic'
+assert_has "白名单域名归一为小写" "$WL" 'scholar.google.com'
+assert_has "白名单整条 URL 取主机名" "$WL" 'pubmed.ncbi.nlm.nih.gov'
+if printf '%s' "$WL" | grep -qF 'bad line!'; then bad "白名单非法行未被丢弃"; else ok "白名单非法行已丢弃"; fi
+if printf '%s' "$WL" | grep -qF '?q=1'; then bad "白名单里残留了 URL 查询串"; else ok "白名单已去掉查询串"; fi
+# 收尾:清空白名单。空文本的语义是「回落内置默认」(该分支由 tests/feature-access.php
+# 第 17 节按真实闸门判定覆盖),这里只确认存的确实是空、而不是把默认名单写进了库。
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"webCnWhitelist":""}' > /dev/null
+assert_contains "清空白名单后落库为空(语义=用内置默认)" "$(curl -s "$BASE/api/admin/settings" -H "$AUTH")" '"webCnWhitelist":""'
 
 # ---------- 登录弹窗与 /login 的能力对齐 ----------
 # 主站登录弹窗(未登录点输入框时弹出)现在与 /login 同款:注册、找回密码、第三方登录。
