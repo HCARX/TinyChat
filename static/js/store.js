@@ -31,7 +31,8 @@
   let db = null;
   let mode = 'ls';             // 'idb' | 'ls'
   let openP = null;            // 打开库只做一次
-  let warnedFull = false;
+  const warned = new Set();    // 同一类提示只弹一次(重复弹会把聊天页刷屏)
+  const writeFails = new Set(); // 落盘失败(如配额满)时回调,调用方据此换更小的副本
 
   function noteFail(why, key, err) {
     fails.push({ why: why, key: key, msg: String((err && err.message) || err || '') });
@@ -39,13 +40,17 @@
   }
 
   // 本地实在写不下时只提示一次:重复弹窗会把聊天页刷屏,而用户能做的动作是同一个
-  function warnOnce(text) {
-    if (warnedFull) return;
-    warnedFull = true;
+  function warnOnce(tag, text) {
+    if (warned.has(tag)) return;
+    warned.add(tag);
     try {
       if (window.OCUI && typeof window.OCUI.toast === 'function') window.OCUI.toast(text, true);
       else console.warn(text);
     } catch (e) { /* 提示失败不影响主流程 */ }
+  }
+
+  function notifyWriteFail(key) {
+    writeFails.forEach((fn) => { try { fn(key); } catch (e) { noteFail('hook', key, e); } });
   }
 
   function lsGet(key) {
@@ -75,7 +80,20 @@
         const d = req.result;
         if (!d.objectStoreNames.contains(OBJECT_STORE)) d.createObjectStore(OBJECT_STORE, { keyPath: 'k' });
       };
-      req.onsuccess = () => resolve(req.result);
+      req.onsuccess = () => {
+        const d = req.result;
+        // 另一个标签页要升级或删除本库时,占着连接会让它一直卡在 blocked。
+        // 让路:关掉连接并退回 localStorage 继续写(写不下时 saveChats 会瘦身兜底),
+        // 下次打开页面自然连上新版本的库。
+        d.onversionchange = () => {
+          try { d.close(); } catch (e) { /* 忽略 */ }
+          db = null;
+          mode = 'ls';
+          noteFail('versionchange', '', new Error('本地库被其它标签页升级'));
+          warnOnce('versionchange', '浏览器本地库被其它标签页升级:本页暂用临时缓存,刷新即可恢复');
+        };
+        resolve(d);
+      };
       req.onerror = () => reject(req.error || new Error('IndexedDB 打不开'));
       // 同一域名下另一个标签页正卡在版本升级/删除库上:不能一直挂着等,超时即退回 localStorage
       req.onblocked = () => reject(new Error('IndexedDB 被其它标签页占用'));
@@ -86,13 +104,14 @@
   function put(key, val) {
     const prev = chains.get(key) || Promise.resolve();
     const next = prev.then(() => {
-      if (!db) return Promise.resolve();
+      if (!db) { notifyWriteFail(key); return Promise.resolve(); }
       return new Promise((resolve) => {
         let tx;
-        try { tx = db.transaction(OBJECT_STORE, 'readwrite'); } catch (e) { noteFail('tx', key, e); resolve(); return; }
-        tx.onabort = tx.onerror = () => { noteFail('put', key, tx.error); resolve(); };
+        try { tx = db.transaction(OBJECT_STORE, 'readwrite'); } catch (e) { noteFail('tx', key, e); notifyWriteFail(key); resolve(); return; }
+        // 落盘失败(多见于配额满)时通知调用方:这一次没进任何持久存储,别再报成功
+        tx.onabort = tx.onerror = () => { noteFail('put', key, tx.error); notifyWriteFail(key); resolve(); };
         tx.oncomplete = () => resolve();
-        try { tx.objectStore(OBJECT_STORE).put({ k: key, v: val }); } catch (e) { noteFail('put', key, e); resolve(); }
+        try { tx.objectStore(OBJECT_STORE).put({ k: key, v: val }); } catch (e) { noteFail('put', key, e); notifyWriteFail(key); resolve(); }
       });
     });
     chains.set(key, next);
@@ -139,6 +158,48 @@
     return pending.length;
   }
 
+  // 把「不是当前用户」的大块本地副本清掉。同一台电脑上换号登录后,上一位用户的会话与
+  // 笔记正文(含图片)不该继续躺在磁盘上 —— 这是换号场景下唯一真正要紧的隐私问题。
+  // 当前用户自己的副本一律不动:退出登录不删自己的数据,否则「刚编辑完就退出登录」
+  // 这种时序会丢掉还没推上云的内容(宁可留一份可被云端覆盖的副本)。
+  // 只认「正好是 <前缀><uid>」的键:uid 是 32 位十六进制(见服务端 tc_uid),不含下划线。
+  // 因此 oc_notes_ui_<uid>(笔记界面状态)、oc_notes_ver_<uid>_<id>(版本历史)、
+  // oc_notes_guide_seen(新手引导标记)、oc_notes_anon(未登录时的暂存)后缀都带下划线或
+  // 不是十六进制,天然被排除在外 —— 早先按 '(.+)' 通配时这几种全会被当成「别人的数据」删掉,
+  // 症状是「每次打开都重新弹一次笔记引导」。
+  const BULK_KEY_RE = /^(?:oc_chats_|oc_chat_delcopies_|oc_notes_)([0-9a-f]{16,})$/i;
+  async function pruneOtherUsers(myUid) {
+    const mine = String(myUid || '');
+    if (!mine) return 0;                 // 没登录(只读首页):不知道谁是「当前用户」,不动任何东西
+    const isOther = (key) => {
+      const m = String(key || '').match(BULK_KEY_RE);
+      return !!(m && m[1] !== mine);
+    };
+    let removed = 0;
+    // localStorage 一侧:老版本留下的、或退回 localStorage 时写的
+    try {
+      const victims = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (isOther(k)) victims.push(k);
+      }
+      victims.forEach((k) => { lsDel(k); removed++; });
+    } catch (e) { noteFail('prune-ls', '', e); }
+    // IndexedDB 一侧:库里可能留着上一位用户的记录(键名与镜像无关,得从库里列)
+    if (db) {
+      try {
+        const tx = db.transaction(OBJECT_STORE, 'readonly');
+        const keys = await idbRequest(tx.objectStore(OBJECT_STORE).getAllKeys());
+        for (const k of keys || []) {
+          if (!isOther(k)) continue;
+          drop(k);
+          removed++;
+        }
+      } catch (e) { noteFail('prune-idb', '', e); }
+    }
+    return removed;
+  }
+
   const OCStore = {
     /**
      * 打开本地库并把镜像灌满;keys 是本次页面要用到的「大块数据」键名。
@@ -183,7 +244,7 @@
         return true;
       }
       const ok = lsSet(key, s);
-      if (!ok) warnOnce('浏览器本地存储已满:最新内容已保存在云端,但本机缓存写不进去');
+      if (!ok) warnOnce('quota', '浏览器本地存储已满:最新内容已保存在云端,但本机缓存写不进去');
       return ok;
     },
 
@@ -193,6 +254,28 @@
       lsDel(key);
       if (mode === 'idb' && db) drop(key);
     },
+
+    /**
+     * 等当前排队的落盘全部结束(自检用:写完立刻 reload 断言数据还在时,
+     * 靠它替代 sleep,避免拿时序碰运气)。
+     */
+    flush() {
+      return Promise.all(Array.from(chains.values())).then(() => undefined).catch(() => undefined);
+    },
+
+    /**
+     * 注册落盘失败回调(可选,可注册多个;返回注销函数)。IndexedDB 写失败时本层
+     * 没法同步把失败返回给调用方,用这个回调让调用方换更小的副本重写一次
+     * (如 saveChats 的瘦身兜底、笔记的纯文本副本)。
+     */
+    onWriteFail(fn) {
+      if (typeof fn !== 'function') return function () {};
+      writeFails.add(fn);
+      return function () { writeFails.delete(fn); };
+    },
+
+    /** 清掉其它用户的大块本地副本(换号登录时调用);返回清掉的键数 */
+    pruneOtherUsers,
 
     /** 当前后端:'idb' 或 'ls'(自检与「存储用在哪」的排查用) */
     mode() { return mode; },

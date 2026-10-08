@@ -138,7 +138,7 @@ await page.addInitScript(([token, uid]) => {
   localStorage.setItem('oc_notes_ui_' + uid, JSON.stringify({ folderId: 'uncat', mode: 'split', expanded: { uncat: true } }));
 }, [login.token, userId]);
 await page.goto(BASE + '/', { waitUntil: 'domcontentloaded' });
-await page.waitForFunction(() => !!(window.OCApp && window.OCApp.state && window.OCApp.state.user), null, { timeout: 30000 });
+await page.waitForFunction(() => document.documentElement.getAttribute('data-boot') === 'done', null, { timeout: 30000 });
 await page.evaluate(() => { if (window.OCNotes) window.OCNotes.warmUp(); });
 await page.waitForFunction(() => !!(window.OCNotes && window.OCNotes.isReady && window.OCNotes.isReady()), null, { timeout: 30000 });
 await page.evaluate(() => window.OCNotes.open());

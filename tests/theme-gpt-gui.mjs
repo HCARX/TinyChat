@@ -125,7 +125,7 @@ await page.addInitScript(([token, prov]) => {
 }, [login.token, PROV]);
 
 await page.goto(BASE + '/', { waitUntil: 'domcontentloaded' });
-await page.waitForFunction(() => !!(window.OCApp && window.OCApp.state && window.OCApp.state.user), null, { timeout: 30000 });
+await page.waitForFunction(() => document.documentElement.getAttribute('data-boot') === 'done', null, { timeout: 30000 });
 await page.waitForFunction(() => (window.OCApp.state.models || []).length > 0, null, { timeout: 20000 });
 await sleep(600);
 

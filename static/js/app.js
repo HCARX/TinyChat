@@ -313,6 +313,30 @@ function setReplyPhase(msg, text) {
   renderMessages();
 }
 
+// 组装用户消息的 content:优先走 multimodal 里带「缩略图 + 预算」的版本(见该文件注释:
+// content 是分享页唯一的图源,但服务端对它有 200000 字符上限,只能内联小图),
+// 拿不到就退回旧的「正文 + 附件 markdown 全量拼接」。
+function messageContentFor(text, attachments, fallback) {
+  const mm = window.OCMultimodal;
+  if (mm && typeof mm.buildMessageContent === 'function') {
+    return mm.buildMessageContent(text, attachments, { fallback: fallback });
+  }
+  const parts = [];
+  if (text) parts.push(text);
+  (attachments || []).forEach((a) => { if (mm) parts.push(mm.toMarkdown(a)); });
+  return parts.join('\n\n') || fallback || '（附件）';
+}
+// 参考图(绘图/视频的图生图)在入正文前补一张缩略图:原图照旧跟着 attachments 走
+async function ensurePreviews(atts) {
+  const mm = window.OCMultimodal;
+  if (!mm || typeof mm.makePreview !== 'function') return atts;
+  await Promise.all((atts || []).map(async (a) => {
+    if (a && a.type === 'image' && !a.previewUrl) {
+      try { a.previewUrl = await mm.makePreview(a.dataUrl); } catch (e) { a.previewUrl = ''; }
+    }
+  }));
+  return atts;
+}
 // 把这一轮用户消息立刻发进对话(含 AI 占位),输入框随即清空。
 // existing 是判定阶段已经发出去的那条时直接复用,避免同一条消息发两遍。
 function postUserTurn(text, attachments, existing) {
@@ -333,12 +357,9 @@ function postUserTurn(text, attachments, existing) {
     renderChatList();
   }
   state._judgeTitle = '';
-  const displayParts = [];
-  if (text) displayParts.push(text);
-  if (attachments.length && window.OCMultimodal) {
-    attachments.forEach((a) => displayParts.push(window.OCMultimodal.toMarkdown(a)));
-  }
-  const content = displayParts.join('\n\n') || '（附件）';
+  // 正文 + 附件片段。图片在 content 里只内联**缩略图**(原图留在 attachments):正文这份
+  // 副本是分享页唯一的图源,而服务端对 content 有 200000 字符上限,内联原图会被整段切掉。
+  const content = messageContentFor(text, attachments);
   const userMsg = { role: 'user', content, text, attachments, createdAt: Date.now() };
   // 发送那一刻的 @助手 / @文件夹 / @笔记 快照:气泡里按输入框的样子回显引用
   userMsg.mentions = mentionsSnapshot(chat);
@@ -672,11 +693,24 @@ function syncBusy() {
 
 // 云同步：保存到本地 + 防抖推送云端
 let syncTimer = null;
+// 瘦身副本里的内联图片(含被服务端 200000 字符上限切掉右括号的残尾)没有保留价值:
+// 这份副本已经把 attachments[].dataUrl 清掉了,留着的 base64 只会把它再撑大一次 ——
+// 而它存在的意义恰恰是「主副本写不下时还能落下点东西」。整段换成一句可读的说明,
+// 免得渲染时画出断图或半截字符。
+function stripInlineImagesForSlim(text) {
+  return String(text || '').replace(
+    /!\[([^\]]*)\]\(\s*data:[^)\s]*\)?/g,
+    (mm, alt) => '（图片「' + (alt || '未命名') + '」未缓存到本机）'
+  );
+}
 function slimChatsForStore(chats) {
   return (chats || []).map((c) => {
     const copy = Object.assign({}, c);
     copy.messages = (c.messages || []).map((m) => {
       const msg = Object.assign({}, m);
+      if (typeof msg.content === 'string' && msg.content.indexOf('data:') >= 0) {
+        msg.content = stripInlineImagesForSlim(msg.content);
+      }
       if (msg.attachments && msg.attachments.length) {
         msg.attachments = msg.attachments.map((a) => {
           const att = Object.assign({}, a);
@@ -724,6 +758,23 @@ function syncPayload() {
     deletedChats,
   });
 }
+// 上一次推送成功的「内容指纹」。与本次内容完全一致就没必要再推一趟:
+// 服务端对同一份列表的处理结果一样,省下的是整套会话(含图片附件)的上行带宽,
+// 还有一次写锁与限流名额(限流每分钟 60 次,连点几下就到了)。
+// 指纹刻意不含 baseRevision —— 推送成功后服务端会把 revision 加一,把它算进去的话
+// 「内容没变」的下一次推送永远指纹不同,这个优化就等于没做。
+// 也刻意只在推送成功后记录:失败或 409 冲突后不记,保证下一次真的会重推。
+let lastPushedKey = '';
+function syncContentKey() {
+  return JSON.stringify({
+    chats: state.chats,
+    deletedIds: state.deletedIds || [],
+    deletedChats: Object.values(state._deletedCopies || {}).slice(0, 20),
+  });
+}
+function syncUpToDate() {
+  return !!lastPushedKey && syncContentKey() === lastPushedKey;
+}
 // 推送成功后清掉「已确认归档」的待删清单与副本(服务端返回的墓碑集合整体采纳)
 function ackDeleted(data) {
   const serverIds = data && data.deletedIds ? Object.keys(data.deletedIds) : [];
@@ -739,11 +790,14 @@ function ackDeleted(data) {
 async function pushChatsToCloud() {
   syncTimer = null;
   if (state._groupTurnActive) { scheduleCloudSync(); return; } // 群聊回合期间延后推送,回合结束再同步
+  // 内容与上次成功推送的一模一样:服务端已经是这份数据,不必再走一趟(见 syncContentKey 注释)
+  if (syncUpToDate()) return;
+  const payload = syncPayload();
   try {
     const r = await api('/api/sync/chats', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: syncPayload(),
+      body: payload,
     });
     const data = await r.json().catch(() => ({}));
     if (r.status === 409) {
@@ -772,6 +826,8 @@ async function pushChatsToCloud() {
     if (state.user) localStorage.setItem('oc_chat_rev_' + state.user.id, String(state.chatRevision));
     // 推送成功:服务端已按本端列表落库(含删除归档),待删清单可清空
     ackDeleted(data);
+    // 记下「服务端现在拥有」的内容指纹(ack 之后算:待删清单已清空,下次比较才对得上)
+    lastPushedKey = syncContentKey();
   } catch (e) {
     // 静默失败,下次修改会重试
   }
@@ -791,6 +847,8 @@ window.addEventListener('beforeunload', () => {
   if (state.token && state.user) {
     if (syncTimer) clearTimeout(syncTimer);
     syncTimer = null;
+    // 内容与上次成功推送的一致就别再发一次:关页面时白推一遍整套会话(带图片附件)最浪费
+    if (syncUpToDate()) return;
     try {
       // keepalive 请求在页面卸载时仍能送达,且可带 Authorization header
       fetch(apiUrl('/api/sync/chats'), {
@@ -7416,21 +7474,20 @@ async function sendImageTurn(prompt, imageAtts, opts) {
     ? [{ type: 'image', name: '上一张图', size: 0, meta: {}, dataUrl: refUrls[0] }]
     : atts.map((a, i) => Object.assign({}, a, { dataUrl: refUrls[i] || a.dataUrl }));
 
-  const parts = [];
-  if (text) parts.push(text);
-  if (refAtts.length && window.OCMultimodal) refAtts.forEach((a) => parts.push(window.OCMultimodal.toMarkdown(a)));
   // 判定阶段消息已进对话时复用它:只补齐参考图附件,不重复落一条用户消息
   const reuse = opts.posted && opts.posted.userMsg && chat.messages.indexOf(opts.posted.userMsg) >= 0 ? opts.posted : null;
+  await ensurePreviews(refAtts);
+  const content = messageContentFor(text, refAtts, '（参考图）');
   let userMsg;
   let placeholder;
   if (reuse) {
     userMsg = reuse.userMsg;
-    userMsg.content = parts.join('\n\n') || '（参考图）';
+    userMsg.content = content;
     userMsg.text = text;
     userMsg.attachments = refAtts;
     placeholder = reuse.assistantMsg;
   } else {
-    userMsg = { role: 'user', content: parts.join('\n\n') || '（参考图）', text, attachments: refAtts, createdAt: Date.now() };
+    userMsg = { role: 'user', content: content, text, attachments: refAtts, createdAt: Date.now() };
     placeholder = { role: 'assistant', content: '', createdAt: Date.now() };
     chat.messages.push(userMsg, placeholder);
     jumpToLatestOnSend();
@@ -7544,21 +7601,20 @@ async function sendVideoTurn(prompt, imageAtts, opts) {
   const hasRefs = refUrls.length > 0;
   if (!text && !hasRefs) { toast('请输入画面描述', true); return; }
 
-  const parts = [];
-  if (text) parts.push(text);
-  if (refAtts.length && window.OCMultimodal) refAtts.forEach((a) => parts.push(window.OCMultimodal.toMarkdown(a)));
   // 判定阶段消息已进对话时复用,不重复落用户消息
   const reuse = opts.posted && opts.posted.userMsg && chat.messages.indexOf(opts.posted.userMsg) >= 0 ? opts.posted : null;
+  await ensurePreviews(refAtts);
+  const content = messageContentFor(text, refAtts, '（参考图）');
   let userMsg;
   let placeholder;
   if (reuse) {
     userMsg = reuse.userMsg;
-    userMsg.content = parts.join('\n\n') || '（参考图）';
+    userMsg.content = content;
     userMsg.text = text;
     userMsg.attachments = refAtts;
     placeholder = reuse.assistantMsg;
   } else {
-    userMsg = { role: 'user', content: parts.join('\n\n') || '（参考图）', text, attachments: refAtts, createdAt: Date.now() };
+    userMsg = { role: 'user', content: content, text, attachments: refAtts, createdAt: Date.now() };
     placeholder = { role: 'assistant', content: '', createdAt: Date.now() };
     chat.messages.push(userMsg, placeholder);
     jumpToLatestOnSend();
@@ -8942,6 +8998,20 @@ function enterReadonlyHome() {
 }
 
 // ============ 启动 ============
+// 启动完成的单一信号。外部(自动化测试、嵌入式脚本)请等 documentElement 上的
+// data-boot="done",不要等 state.user —— state.user 在设置云同步、本地库打开之前
+// 就赋值了,等它等于等一个半初始化的应用(主题/模型/会话都还没落位)。
+// data-boot-mode 说明走的是哪条路径:app=登录态正常启动,readonly=未登录只读首页,
+// error=启动过程异常(已回落到只读首页)。
+let _bootResolve;
+const bootReady = new Promise((res) => { _bootResolve = res; });
+function bootDone(mode) {
+  const el = document.documentElement;
+  if (el.getAttribute('data-boot') === 'done') return;
+  el.setAttribute('data-boot', 'done');
+  el.setAttribute('data-boot-mode', mode || 'app');
+  if (_bootResolve) _bootResolve(window.OCApp || null);
+}
 (async function init() {
   initTheme();
   // 第三方一键登录回跳到主站(/):落地页是主站而不是登录页,必须在这里消费票据,
@@ -8969,6 +9039,7 @@ function enterReadonlyHome() {
     if (!state.token) {
       // 未开启游客:直接显示对话主页(不再强制跳转登录页),点击输入框再弹登录
       enterReadonlyHome();
+      bootDone('readonly');
       return;
     }
   }
@@ -8979,6 +9050,7 @@ function enterReadonlyHome() {
     // 保留 token 并退回只读首页,后续请求会自然恢复(或用户手动登录)。
     if (!r.ok) {
       enterReadonlyHome();
+      bootDone('readonly');
       return;
     }
     state.user = data.user;
@@ -8996,7 +9068,24 @@ function enterReadonlyHome() {
     // 会话正文在本地库(IndexedDB)里,读之前先把库打开、镜像灌满,并把上个版本留在
     // localStorage 里的旧副本迁进来。这一步失败不拦着用:OCStore 会退回 localStorage,
     // 读到的仍是同一份数据(只是又受那 5MB 限制)。
-    if (window.OCStore) { try { await window.OCStore.ready([chatsKey(), delCopiesKey()]); } catch (e) { /* 兜底存储 */ } }
+    if (window.OCStore) {
+      try { await window.OCStore.ready([chatsKey(), delCopiesKey()]); } catch (e) { /* 兜底存储 */ }
+      // 换号登录后,把上一位用户留在本机的大块副本(会话/删除副本/笔记正文,含图片)清掉:
+      // 同一台电脑上换个账号就不该再看到上一个人的图。当前用户自己的副本不动。
+      if (typeof window.OCStore.pruneOtherUsers === 'function' && state.user) {
+        try { window.OCStore.pruneOtherUsers(state.user.id).catch(() => {}); } catch (e) { /* 忽略 */ }
+      }
+      // IndexedDB 落盘失败(多见于配额满)时,set() 已经同步返回过「成功」了,
+      // 只能靠这个回调补一次瘦身重写:把附件本体与内联图片去掉,保住会话骨架。
+      // 每次打开页面最多补一次,免得瘦身后的又一次失败来回打转。
+      if (typeof window.OCStore.onWriteFail === 'function') {
+        window.OCStore.onWriteFail((key) => {
+          if (key !== chatsKey() || state._slimRetried) return;
+          state._slimRetried = true;
+          try { window.OCStore.set(key, JSON.stringify(slimChatsForStore(state.chats))); } catch (e) { /* 忽略 */ }
+        });
+      }
+    }
     loadChats();
     renderChatList();
     state._scrollHistoryToBottom = true;
@@ -9019,6 +9108,7 @@ function enterReadonlyHome() {
     if (typeof syncComposerEffort === 'function') syncComposerEffort();
     if (typeof syncComposerWebSearch === 'function') syncComposerWebSearch();
     if (state.isGuest) showGuestBar();
+    bootDone('app');
   } catch (e) {
     // 令牌失效或接口异常:清掉令牌回到只读首页并提示登录,而不是硬跳转到独立登录页
     localStorage.removeItem('oc_token');
@@ -9027,8 +9117,14 @@ function enterReadonlyHome() {
     state.user = null;
     enterReadonlyHome();
     openAuthModal('登录状态已失效，请重新登录');
+    bootDone('error');
   }
-})();
+})().catch((e) => {
+  // 启动阶段抛到 try 之外的异常(例如主题/票据消费):如实记一笔并放行信号,
+  // 免得外部一直等不到「启动完成」而超时,却看不出原因。
+  console.error('[OCApp] 启动异常', e);
+  bootDone('error');
+});
 // ============ @ 其他模型重答(多版本标签页) ============
 
 // 切换到指定版本(绝对下标;供消息顶部的模型标签页使用)
@@ -9472,6 +9568,11 @@ window.OCApp = {
   state,
   api,
   toast,
+  // 启动完成信号:await OCApp.ready 等价于等 documentElement 的 data-boot="done"。
+  // 测试脚本用它替代「等 state.user」——后者在半初始化阶段就已经为真。
+  ready: bootReady,
+  booted: () => document.documentElement.getAttribute('data-boot') === 'done',
+  BOOT_READY_ATTR: 'data-boot',
   extractText,
   ENDPOINT_BY_FORMAT,
   providerFormat,

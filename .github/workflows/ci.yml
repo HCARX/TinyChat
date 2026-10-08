@@ -107,6 +107,12 @@ jobs:
         # 功能照常、界面照常,只有用户的图存不住。这类「读代码看不出来」的差异钉成契约;
         # 真行为由 tests/local-store-gui.mjs 在真浏览器里量。
         run: node tests/local-store.js
+      - name: 正文内联图片契约自检(三处正文组装 / 预算小于服务端上限 / 拿不到缩略图就不内联)
+        # 一张图在消息里有两个去处:attachments 里的原图,与 content 里那份内联副本。
+        # **聊天分享只带走 role+content**,所以那份内联副本不能省;但 content 有 200000 字符
+        # 上限,内联原图会被整段切掉 —— 分享页反而没图。现在只内联缩略图。这类「少改一处就
+        # 悄悄退化」的地方钉成契约;真实体积与分享页效果由 chat-image-preview-gui.mjs 量。
+        run: node tests/chat-image-inline.js
       - name: 生图图片代理自检(签名 / SSRF 防护 / 媒体类型收紧 / 协议白名单)
         run: php tests/image-proxy.php
       - name: 对话式生图/改图自检(抽图 / 参考图 / 兜底识别)
@@ -263,5 +269,12 @@ jobs:
       # 上限,再拿一份超过它的会话走一遍「写 → 拦截云同步重载读回」。
       # 顺带验旧键迁移(全新用户资料 + 只放 localStorage 的旧副本)与「浏览器不给用 IndexedDB
       # 时退回 localStorage」这条兜底 —— 后者决定了换存储会不会把页面弄坏。
-      - name: 本地存储 GUI 自检(超 5MB 载荷往返 / 旧键迁移 / IDB 不可用兜底 / 笔记)
+      - name: 本地存储 GUI 自检(超 5MB 载荷往返 / 旧键迁移 / IDB 不可用兜底 / 笔记 / 换号清理)
         run: node tests/local-store-gui.mjs
+      # 以前一张图在正文里内联了完整 base64:云同步每次白推几 MB(服务端再按 200000 上限切掉),
+      # 本地副本也跟着翻倍;最要命的是分享页(只带 role+content)因为整段被切掉而**没图**。
+      # 这里真上传一张 900×900 的图走完「发送 → 落库 → 分享 → 打开分享页」,量的是:
+      # 正文里那份到底多大、本地副本有没有翻倍、气泡是否仍按原图渲染、分享页还看不看得见图,
+      # 并用一组「老式内联」的分享做对照(它必须没图),证明用例不是在空转。
+      - name: 正文内联图片 GUI 自检(缩略图化 / 附件保原图 / 分享页仍有图 / 对照)
+        run: node tests/chat-image-preview-gui.mjs

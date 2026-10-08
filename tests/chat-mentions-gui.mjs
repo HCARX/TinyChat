@@ -151,7 +151,7 @@ await page.addInitScript(([token, prov]) => {
 }, [login.token, PROV]);
 
 await page.goto(BASE + '/', { waitUntil: 'domcontentloaded' });
-await page.waitForFunction(() => !!(window.OCApp && window.OCApp.state && window.OCApp.state.user), null, { timeout: 30000 });
+await page.waitForFunction(() => document.documentElement.getAttribute('data-boot') === 'done', null, { timeout: 30000 });
 await page.evaluate(() => { if (window.OCNotes) window.OCNotes.warmUp(); });
 await page.waitForFunction(() => !!(window.OCNotes && window.OCNotes.isReady && window.OCNotes.isReady()), null, { timeout: 30000 });
 await page.waitForFunction(() => (window.OCApp.state.models || []).length > 0, null, { timeout: 20000 });
@@ -347,7 +347,7 @@ check('.msg 下没有挂在正文之外的提示条/来源行: ' + JSON.stringif
 
 console.log('\n== 4. 刷新后回显仍在(本地存储往返) ==');
 await page.reload({ waitUntil: 'domcontentloaded' });
-await page.waitForFunction(() => !!(window.OCApp && window.OCApp.state && window.OCApp.state.user), null, { timeout: 30000 });
+await page.waitForFunction(() => document.documentElement.getAttribute('data-boot') === 'done', null, { timeout: 30000 });
 await page.waitForFunction(() => {
   const s = window.OCApp.state;
   const c = (s.chats || []).find((x) => x.id === s.currentChatId);

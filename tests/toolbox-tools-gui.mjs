@@ -115,7 +115,7 @@ const primer = await ctx.newPage();
 await primer.addInitScript((t) => localStorage.setItem('oc_token', t), login.token);
 await primer.addInitScript((p) => localStorage.setItem('oc_provider', p), PROV);
 await primer.goto(BASE + '/', { waitUntil: 'domcontentloaded' });
-await primer.waitForFunction(() => !!(window.OCApp && window.OCApp.state && window.OCApp.state.user), null, { timeout: 30000 }).catch(() => {});
+await primer.waitForFunction(() => document.documentElement.getAttribute('data-boot') === 'done', null, { timeout: 30000 }).catch(() => {});
 // 用浏览器自己发一次带 Authorization 的请求,让服务端把 oc_tbox Cookie 种到本 context 上
 // (工具页是独立地址、靠 Cookie 认人;不带这一步,12 个工具页全会 404)
 await primer.evaluate((t) => fetch('/api/sync/toolbox', { headers: { Authorization: 'Bearer ' + t } }).then((r) => r.status), login.token);

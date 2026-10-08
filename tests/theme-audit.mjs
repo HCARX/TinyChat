@@ -143,7 +143,7 @@ for (const [id, label] of [['default', '默认'], ['chatgpt', 'GPT'], ['block', 
     localStorage.setItem('oc_prefs', JSON.stringify({ theme: 'light', themePack: th }));
   }, [login.token, pv.provider.id, id]);
   await page.goto(BASE + '/', { waitUntil: 'domcontentloaded' });
-  await page.waitForFunction(() => !!(window.OCApp && window.OCApp.state && window.OCApp.state.user), null, { timeout: 30000 });
+  await page.waitForFunction(() => document.documentElement.getAttribute('data-boot') === 'done', null, { timeout: 30000 });
   await page.waitForFunction(() => (window.OCApp.state.models || []).length > 0, null, { timeout: 20000 });
   if (id !== 'default') await page.waitForFunction((t) => document.documentElement.getAttribute('data-oc-theme') === t, id, { timeout: 15000 }).catch(() => {});
   await sleep(900);

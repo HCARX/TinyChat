@@ -373,7 +373,7 @@ console.log('\n== 6. 笔记正文走同一层(单篇上限 50 万字节,十来�
     await new Promise((r) => setTimeout(r, 1500));
   }, { uid: UID, json: padJson });
   await p4.reload({ waitUntil: 'domcontentloaded' });
-  await p4.waitForFunction(() => !!(window.OCApp && window.OCApp.state && window.OCApp.state.user), null, { timeout: 30000 });
+  await p4.waitForFunction(() => document.documentElement.getAttribute('data-boot') === 'done', null, { timeout: 30000 });
   await sleep(600);
   const big = await p4.evaluate((args) => ({
     len: (window.OCStore.get('oc_notes_' + args.uid) || '').length,
@@ -383,7 +383,126 @@ console.log('\n== 6. 笔记正文走同一层(单篇上限 50 万字节,十来�
   await p4.close();
 }
 
-console.log('\n== 7. 无 JS 异常 ==');
+console.log('\n== 7. 换号登录:清掉上一位用户留在本机的大块副本 ==');
+{
+  // 同一台电脑上换个账号,不该还能看到上一个人的会话图与笔记正文。
+  // 关键是**启动时就清**(不是靠某个按钮):所以把「别人的数据」放在应用脚本之前写进去,
+  // 进应用后断言它被清掉、而自己的副本原样保留。
+  // 别人的 uid 要按真实形状给(32 位十六进制,见服务端 tc_uid):
+  // 键名判定就靠「差一个 uid」,用 'other-user-9' 这种自造名测不出问题
+  const OTHER = 'a1b2c3d4e5f60718293a4b5c6d7e8f90';
+  const ctx7 = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  await ctx7.route('**/api/sync/chats', (r) => r.abort());
+  const p7 = await ctx7.newPage();
+  p7.on('pageerror', (e) => pageErrors.push('prune: ' + String((e && e.message) || e)));
+  p7.on('console', (m) => { if (m.type() === 'error') pageErrors.push('prune console: ' + m.text()); });
+  await p7.addInitScript((args) => {
+    localStorage.setItem('oc_token', args.token);
+    localStorage.setItem('oc_chats_' + args.other, '别人的会话(含图片)');
+    localStorage.setItem('oc_notes_' + args.other, '别人的笔记正文');
+    localStorage.setItem('oc_chats_' + args.mine, '我自己的会话');
+  }, { token: login.token, other: OTHER, mine: UID });
+  await p7.goto(BASE + '/', { waitUntil: 'domcontentloaded' });
+  await waitStoreReady(p7);
+  await sleep(600); // 清理是启动后异步跑的,等它落地
+
+  const afterBoot = await p7.evaluate((args) => ({
+    otherChats: localStorage.getItem('oc_chats_' + args.other),
+    otherNotes: localStorage.getItem('oc_notes_' + args.other),
+    // 自己那份会被启动时的旧键迁移搬进库里(并删掉 localStorage 的旧键),所以要看库里那份
+    mine: window.OCStore.get('oc_chats_' + args.mine),
+    mineInIdb: (window.OCStore.mode ? window.OCStore.mode() : '') === 'idb',
+  }), { other: OTHER, mine: UID });
+  check('别人的会话副本在启动时就被清掉', afterBoot.otherChats === null, afterBoot.otherChats);
+  check('别人的笔记副本也被清掉', afterBoot.otherNotes === null, afterBoot.otherNotes);
+  check('自己的副本原样保留(' + JSON.stringify(afterBoot.mine) + ', mode=' + (afterBoot.mineInIdb ? 'idb' : 'ls') + ')', afterBoot.mine === '我自己的会话');
+
+  // IndexedDB 一侧:库里可能留着上一位用户的记录,同样要清
+  const idbPrune = await p7.evaluate(async (args) => {
+    window.OCStore.set('oc_chats_' + args.other, '别人库里的会话');
+    await window.OCStore.flush();
+    const removed = await window.OCStore.pruneOtherUsers(args.mine);
+    await window.OCStore.flush();
+    const db = await new Promise((res) => { const r = indexedDB.open('oc_store', 1); r.onsuccess = () => res(r.result); r.onerror = () => res(null); });
+    const keys = db ? await new Promise((res) => {
+      const tx = db.transaction('kv', 'readonly');
+      const q = tx.objectStore('kv').getAllKeys();
+      q.onsuccess = () => res(q.result || []);
+      q.onerror = () => res([]);
+    }) : [];
+    return { removed: removed, others: keys.filter((k) => String(k).indexOf(args.other) >= 0), mine: keys.filter((k) => String(k).indexOf(args.mine) >= 0).length };
+  }, { other: OTHER, mine: UID });
+  check('库里的别人的记录也被清掉(清了 ' + idbPrune.removed + ' 个键)', idbPrune.others.length === 0);
+  check('库里自己的键还在(' + idbPrune.mine + ' 个)', idbPrune.mine > 0);
+
+  const noUser = await p7.evaluate(async () => {
+    const other = 'ffeeddccbbaa99887766554433221100';
+    localStorage.setItem('oc_chats_' + other, 'x');
+    const n = await window.OCStore.pruneOtherUsers('');
+    const left = localStorage.getItem('oc_chats_' + other);
+    localStorage.removeItem('oc_chats_' + other);
+    return { n: n, left: left };
+  });
+  check('没登录(uid 为空)时不动任何键(' + noUser.n + ' 个)', noUser.n === 0 && noUser.left === 'x');
+
+  // 小键不是「大块副本」,一律不许碰 —— 尤其是新手引导标记(被误删的症状是每次打开都重新弹引导)
+  const smallKeys = await p7.evaluate(async (args) => {
+    localStorage.setItem('oc_notes_guide_seen', '1');
+    localStorage.setItem('oc_notes_ui_' + args.mine, '{"sidebar":1}');
+    localStorage.setItem('oc_notes_ver_' + args.mine + '_note1', 'v1');
+    window.OCStore.set('oc_chats_' + args.other, '别人的会话');
+    await window.OCStore.flush();
+    await window.OCStore.pruneOtherUsers(args.mine);
+    await window.OCStore.flush();
+    return {
+      guide: localStorage.getItem('oc_notes_guide_seen'),
+      ui: localStorage.getItem('oc_notes_ui_' + args.mine),
+      ver: localStorage.getItem('oc_notes_ver_' + args.mine + '_note1'),
+      other: localStorage.getItem('oc_chats_' + args.other),
+    };
+  }, { other: OTHER, mine: UID });
+  check('笔记新手引导标记没被当成「别人的数据」删掉', smallKeys.guide === '1', smallKeys.guide);
+  check('笔记界面状态(oc_notes_ui_<uid>)保留', smallKeys.ui === '{"sidebar":1}', smallKeys.ui);
+  check('笔记版本历史(oc_notes_ver_<uid>_<id>)保留', smallKeys.ver === 'v1', smallKeys.ver);
+  check('同一轮里别人的大块副本仍然被清掉', smallKeys.other === null, smallKeys.other);
+  await ctx7.close();
+}
+
+console.log('\n== 8. 落盘失败回调与 flush(自检可用的确定性等待)==');
+{
+  const p8 = await ctx.newPage();
+  p8.on('pageerror', (e) => pageErrors.push('hook: ' + String((e && e.message) || e)));
+  await p8.goto(BASE + '/', { waitUntil: 'domcontentloaded' });
+  await waitStoreReady(p8);
+  const hooks = await p8.evaluate(async (args) => {
+    const mine = args.mine;
+    const seen = [];
+    const off = window.OCStore.onWriteFail((k) => seen.push(k));
+    // flush 必须等到真的落盘:写完立刻读库(绕过镜像)能看到值,说明已经提交
+    window.OCStore.set('oc_chats_' + args.mine, 'x'.repeat(1000));
+    await window.OCStore.flush();
+    const readBack = await new Promise((res) => {
+      const r = indexedDB.open('oc_store', 1);
+      r.onsuccess = () => {
+        const db = r.result;
+        const tx = db.transaction('kv', 'readonly');
+        const q = tx.objectStore('kv').get('oc_chats_' + mine);
+        q.onsuccess = () => res(q.result ? String(q.result.v).length : -1);
+        q.onerror = () => res(-2);
+      };
+      r.onerror = () => res(-3);
+    });
+    off();
+    const okHook = typeof window.OCStore.onWriteFail === 'function';
+    return { readBack: readBack, okHook: okHook, seen: seen.length };
+  }, { mine: UID });
+  check('flush 之后数据确实已提交到库(' + hooks.readBack + ' 字符)', hooks.readBack === 1000);
+  check('onWriteFail 可注册且返回注销函数', hooks.okHook);
+  check('正常写入不会误报失败回调', hooks.seen === 0, hooks.seen);
+  await p8.close();
+}
+
+console.log('\n== 9. 无 JS 异常 ==');
 {
   // 拦截云同步会让浏览器把被中断的请求记成 net::ERR_FAILED —— 这是本用例自己造成的,
   // 与被测代码无关,排除掉;其余任何页面异常都要现形。

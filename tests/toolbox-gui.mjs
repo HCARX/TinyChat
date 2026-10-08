@@ -163,7 +163,7 @@ async function openAdminPage() {
 
 async function boot() {
   await page.goto(BASE + '/', { waitUntil: 'domcontentloaded' });
-  await page.waitForFunction(() => !!(window.OCApp && window.OCApp.state && window.OCApp.state.user), null, { timeout: 30000 });
+  await page.waitForFunction(() => document.documentElement.getAttribute('data-boot') === 'done', null, { timeout: 30000 });
   await page.waitForFunction(() => !!(window.OCApp.state.models || []).length, null, { timeout: 30000 });
   await page.waitForFunction(() => !!window.OCToolbox, null, { timeout: 30000 });
   await sleep(250);

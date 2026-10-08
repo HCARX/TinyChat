@@ -75,7 +75,7 @@
 
   /**
    * 读取文件并返回结构化内容（供消息上下文使用）
-   * @returns {Promise<{type, name, size, content, dataUrl?}>}
+   * @returns {Promise<{type, name, size, content, dataUrl?, previewUrl?}>}
    */
   async function readFile(file) {
     const meta = fileTypeInfo(file);
@@ -87,7 +87,10 @@
         fr.onerror = rej;
         fr.readAsDataURL(file);
       });
-      return { type: 'image', name: file.name, size: file.size, dataUrl, mediaType: file.type || '', meta };
+      // dataUrl 是「给上游模型/给对话页看的那一份」(原图),previewUrl 是「内联进 content 的小图」。
+      // 两者为什么必须分开,见下面 buildMessageContent 的长注释。
+      const previewUrl = await makePreview(dataUrl);
+      return { type: 'image', name: file.name, size: file.size, dataUrl, previewUrl, mediaType: file.type || '', meta };
     }
     // 文本类文件提取内容; PDF / 过大文件只保留文件名
     let content = '';
@@ -114,6 +117,115 @@
     }
     const ext = (attach.meta && attach.meta.ext) || '';
     return `**[附件] ${attach.name}**(大小 ${formatSize(attach.size)})\n\n\`\`\`${ext}\n${(attach.content || '').slice(0, 20000)}\n\`\`\``;
+  }
+
+  // ============ 内联进消息正文的图片:只能放缩略图 ============
+  // 同一张图在消息里有两个去处,用途完全不同,不能混:
+  //   - attachments[].dataUrl:原图。对话页据此渲染气泡(见 app.js userMsgDisplay)、
+  //     发给上游模型(见 toApiContent)、云同步也带着它(服务端上限 8MB)。
+  //   - content 里的 ![](data:...):正文里的内联副本。**聊天分享只带走 role+content**
+  //     (服务端 tc_sanitize_share_messages),所以分享页能拿到的图只有这一份 —— 不能省。
+  // 但 content 在服务端有 200000 字符上限(见 tc_sanitize_chats),一张 3MB 的图内联进来
+  // 就是 400 万字符:既会让每次云同步推上去的载荷凭空大几 MB(服务端随后又把大半截掉),
+  // 又会让分享页因为整段被切掉而**完全没有图**。
+  // 所以这里内联的是长边 ≤1280 的缩略图(约 100KB 字符),原图仍走 attachments:
+  // 分享页有图可看、对话页按原图渲染、云同步载荷与本地副本一起瘦下来。
+  const PREVIEW_MAX_EDGE = 1024;
+  const PREVIEW_MAX_CHARS = 140000;      // 单张缩略图上限(约 105KB 二进制)
+  const CONTENT_IMAGE_BUDGET = 160000;   // 一条消息里内联图片的总上限,给服务端 200000 留余量
+  // 缩略图档位:从「够清晰」往下退,命中即停。真实照片第一档就够了;
+  // 退到最后一档还超预算(照片类噪声图几乎压不动)才放弃内联。
+  const PREVIEW_STEPS = [[1024, 0.7], [1024, 0.5], [768, 0.55], [640, 0.45], [512, 0.4], [384, 0.32], [256, 0.3]];
+
+  let webpOk = null;
+  function supportsWebp() {
+    if (webpOk !== null) return webpOk;
+    try {
+      const c = document.createElement('canvas');
+      c.width = c.height = 1;
+      // 不支持时浏览器会退回 png,按返回的 mime 判断即可
+      webpOk = /^data:image\/webp/i.test(c.toDataURL('image/webp', 0.5));
+    } catch (e) { webpOk = false; }
+    return webpOk;
+  }
+
+  function encodeScaled(img, maxEdge, quality, mime) {
+    let w = img.naturalWidth || img.width || 0;
+    let h = img.naturalHeight || img.height || 0;
+    if (!w || !h) return '';                    // 尺寸读不到(SVG 未声明宽高等):放弃缩略图
+    const scale = Math.min(1, maxEdge / Math.max(w, h));
+    w = Math.max(1, Math.round(w * scale));
+    h = Math.max(1, Math.round(h * scale));
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    const ctx = c.getContext('2d');
+    if (!ctx) return '';
+    // JPEG 没有透明通道:先铺白底,免得透明 PNG 转出来是黑块
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, w, h);
+    ctx.drawImage(img, 0, 0, w, h);
+    try { return c.toDataURL(mime, quality) || ''; } catch (e) { return ''; }
+  }
+
+  /**
+   * 生成可内联进 content 的缩略图。返回 '' 表示这次拿不到缩略图,
+   * 调用方就**不内联**(分享页少一张图,总好过一屏 base64 乱码)。
+   */
+  function makePreview(dataUrl) {
+    return new Promise((resolve) => {
+      const src = String(dataUrl || '');
+      if (!/^data:image\//i.test(src)) return resolve('');
+      if (src.length <= PREVIEW_MAX_CHARS) return resolve(src);  // 本来就小:原样内联(保真,动图还能动)
+      if (/^data:image\/gif/i.test(src)) return resolve('');     // 动图重编码只剩一帧,不如不动它
+      const img = new Image();
+      img.onload = () => {
+        try {
+          const mime = supportsWebp() ? 'image/webp' : 'image/jpeg';
+          for (const step of PREVIEW_STEPS) {
+            const out = encodeScaled(img, step[0], step[1], mime);
+            if (out && out.length <= PREVIEW_MAX_CHARS && /^data:image\/(webp|jpeg)/i.test(out)) return resolve(out);
+          }
+          resolve('');
+        } catch (e) { resolve(''); }
+      };
+      img.onerror = () => resolve('');
+      img.src = src;
+    });
+  }
+
+  /** 内联用的图片片段:优先缩略图;拿不到缩略图就不内联(返回空串) */
+  function toMarkdownPreview(attach) {
+    if (!attach || attach.type !== 'image') return toMarkdown(attach);
+    const url = attach.previewUrl || '';
+    if (!url) return '';
+    return `![${attach.name}](${url})`;
+  }
+
+  /**
+   * 组装一条用户消息的 content:正文 + 附件片段(图片用缩略图,并在总预算内)。
+   * 预算按「正文长度 + 已内联图片」实时扣减,保证整条 content 不超过服务端 200000 的
+   * 截断线 —— 否则尾部的图片会被服务端整段切掉,分享页就看不到图了。
+   */
+  function buildMessageContent(text, attachments, opts) {
+    opts = opts || {};
+    const parts = [];
+    const head = String(text || '').trim();
+    if (head) parts.push(head);
+    let budget = (typeof opts.inlineBudget === 'number' ? opts.inlineBudget : CONTENT_IMAGE_BUDGET) - head.length;
+    (Array.isArray(attachments) ? attachments : []).forEach((a) => {
+      if (!a) return;
+      if (a.type === 'image') {
+        const md = toMarkdownPreview(a);
+        // 空串 = 没缩略图;超预算 = 内联它会挤掉后面的图。两种都不内联:
+        // 对话页照旧从 attachments 还原原图,用户看到的内容不受影响。
+        if (!md || md.length > budget) return;
+        budget -= md.length;
+        parts.push(md);
+        return;
+      }
+      parts.push(toMarkdown(a));
+    });
+    return parts.join('\n\n') || (opts.fallback || '（附件）');
   }
 
   function imageMediaType(attach) {
@@ -353,6 +465,9 @@
     readFile, toMarkdown, toApiContent, formatSize, fileTypeInfo, createUploadButton,
     needsMineru, mineruLimitText, mineruTooBig, mineruMode,
     openArtifact, enhanceArtifactButtons, renderFollowUps, VoiceInput,
+    // 正文内联图片相关:toMarkdownPreview 单张, buildMessageContent 整条(带预算)
+    toMarkdownPreview, buildMessageContent, makePreview,
+    PREVIEW_MAX_CHARS, CONTENT_IMAGE_BUDGET,
   };
 
   function escapeHtml(s) {

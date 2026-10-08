@@ -91,6 +91,34 @@ check('saveChats 仍保留瘦身副本兜底',
   /if \(!window\.OCStore\.set\(key, JSON\.stringify\(state\.chats\)\)\)/.test(appSrc)
   && /slimChatsForStore\(state\.chats\)/.test(appSrc));
 
+console.log('\n== 5. 兜底与清理的接线 ==');
+// 落盘失败(配额满)时 set() 已经同步报过成功,只能靠回调补写瘦身副本 —— 没接上就等于没有
+check('app.js 给会话注册了落盘失败回调', /window\.OCStore\.onWriteFail\(/.test(appSrc) && /state\._slimRetried/.test(appSrc));
+check('笔记也给自己的键注册了落盘失败回调', /window\.OCStore\.onWriteFail\(/.test(notesSrc) && /slimDocPayload\(\)/.test(notesSrc));
+// 换号清理必须在启动时跑,否则「换个账号还能看到上一个人的图」
+check('app.js 启动时清掉其它用户的大块副本',
+  /pruneOtherUsers\(state\.user\.id\)/.test(appSrc)
+  && appSrc.indexOf('pruneOtherUsers(state.user.id)') > appSrc.indexOf('OCStore.ready([chatsKey(), delCopiesKey()])'),
+  '清理要么没接,要么排在打开本地库之前(那时库还没开,库里别人的数据清不掉)');
+check('清理只认这三类大块键,不碰别的键',
+  /oc_chats_\|oc_chat_delcopies_\|oc_notes_/.test(storeSrc)
+  && !/oc_prefs/.test(storeSrc.slice(storeSrc.indexOf('BULK_KEY_RE'), storeSrc.indexOf('BULK_KEY_RE') + 900)),
+  '把偏好设置之类的小键也扫进去,换号会把用户的设置一起删掉');
+// 键名末尾必须正好是一个 uid(十六进制)。按 '(.+)' 通配时 oc_notes_ui_<uid>、
+// oc_notes_ver_<uid>_<id>、oc_notes_guide_seen 都会落进网里 —— 症状是「每次打开都重新弹笔记引导」。
+check('清理要求键名末尾正好是 uid(小键/全局标记不在网内)',
+  /BULK_KEY_RE = \/\^\(\?:oc_chats_\|oc_chat_delcopies_\|oc_notes_\)\(\[0-9a-f\]\{16,\}\)\$\/i/.test(storeSrc),
+  '改成通配就等着误删 oc_notes_ui_* / oc_notes_ver_* / oc_notes_guide_seen');
+check('没登录时(uid 为空)不做清理', /if \(!mine\) return 0;/.test(storeSrc));
+// 重复推送同样的内容纯属浪费:整套会话(含图片)白推一次,还占限流名额
+check('内容与上次成功推送一致时不再推送',
+  /function syncUpToDate\(\)/.test(appSrc) && /if \(syncUpToDate\(\)\) return;/.test(appSrc)
+  && appSrc.indexOf('if (syncUpToDate()) return;') < appSrc.indexOf('lastPushedKey = syncContentKey()'),
+  '守卫没接上,或在记录指纹之前 —— 都会让「原样重推」继续发生');
+check('指纹不含 baseRevision(否则永远对不上,优化等于没做)',
+  /function syncContentKey\(\)[\s\S]{0,300}?deletedChats:/.test(appSrc)
+  && !/function syncContentKey\(\)[\s\S]{0,300}?baseRevision/.test(appSrc));
+
 console.log('\n== 4. 加载顺序 ==');
 const html = read('index.html');
 const storeTag = html.indexOf('static/js/store.min.js');

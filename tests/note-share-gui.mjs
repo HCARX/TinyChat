@@ -210,7 +210,7 @@ console.log('\n== 3. 与应用内笔记预览逐条一致(默认主题)==');
   const page = await ctx.newPage();
   await page.addInitScript((t) => { localStorage.setItem('oc_token', t); }, login.token);
   await page.goto(BASE + '/', { waitUntil: 'domcontentloaded' });
-  await page.waitForFunction(() => !!(window.OCApp && window.OCApp.state && window.OCApp.state.user), null, { timeout: 30000 });
+  await page.waitForFunction(() => document.documentElement.getAttribute('data-boot') === 'done', null, { timeout: 30000 });
   await page.evaluate(() => { if (window.OCNotes) window.OCNotes.warmUp(); });
   await page.waitForFunction(() => !!(window.OCNotes && window.OCNotes.isReady && window.OCNotes.isReady()), null, { timeout: 30000 });
   await page.evaluate(() => {

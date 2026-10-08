@@ -168,7 +168,7 @@ page.on('console', (m) => { if (m.type() === 'error') pageErrors.push('console: 
 // 只写令牌:不预置任何对话缓存,等价于新设备首次登录
 await page.addInitScript(([token]) => { localStorage.setItem('oc_token', token); }, [login.token]);
 await page.goto(BASE + '/', { waitUntil: 'domcontentloaded' });
-await page.waitForFunction(() => !!(window.OCApp && window.OCApp.state && window.OCApp.state.user), null, { timeout: 30000 });
+await page.waitForFunction(() => document.documentElement.getAttribute('data-boot') === 'done', null, { timeout: 30000 });
 await page.waitForSelector('#messages .msg.user', { timeout: 20000 });
 await sleep(1500);
 
@@ -220,7 +220,7 @@ await page2.addInitScript(([token, cid]) => {
   localStorage.setItem('oc_token', token);
 }, [login.token]);
 await page2.goto(BASE + '/', { waitUntil: 'domcontentloaded' });
-await page2.waitForFunction(() => !!(window.OCApp && window.OCApp.state && window.OCApp.state.user), null, { timeout: 30000 });
+await page2.waitForFunction(() => document.documentElement.getAttribute('data-boot') === 'done', null, { timeout: 30000 });
 await page2.waitForSelector('#messages .msg', { timeout: 20000 });
 // 切到「历史截断」这个会话
 await page2.evaluate(() => {

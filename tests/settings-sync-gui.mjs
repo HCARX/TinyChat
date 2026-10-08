@@ -119,7 +119,7 @@ async function openDevice(name, viewport) {
   watch(page, name);
   await page.addInitScript(([token]) => { localStorage.setItem('oc_token', token); }, [login.token]);
   await page.goto(BASE + '/', { waitUntil: 'domcontentloaded' });
-  await page.waitForFunction(() => !!(window.OCApp && window.OCApp.state && window.OCApp.state.user), null, { timeout: 30000 });
+  await page.waitForFunction(() => document.documentElement.getAttribute('data-boot') === 'done', null, { timeout: 30000 });
   return { ctx, page };
 }
 

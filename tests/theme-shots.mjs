@@ -119,7 +119,7 @@ async function prepPage(viewport, theme, dark) {
     localStorage.setItem('oc_prefs', JSON.stringify({ theme: dk ? 'dark' : 'light', themePack: th }));
   }, [login.token, PROV, theme, dark]);
   await page.goto(BASE + '/', { waitUntil: 'domcontentloaded' });
-  await page.waitForFunction(() => !!(window.OCApp && window.OCApp.state && window.OCApp.state.user), null, { timeout: 30000 });
+  await page.waitForFunction(() => document.documentElement.getAttribute('data-boot') === 'done', null, { timeout: 30000 });
   await page.waitForFunction(() => (window.OCApp.state.models || []).length > 0, null, { timeout: 20000 });
   // 主题样式表是异步注入的,等它真的挂上再出图,否则会拍到「半默认」的样子
   if (theme !== 'default') {

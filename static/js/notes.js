@@ -121,12 +121,11 @@
       createdAt: now, updatedAt: now, system: true,
     });
   }
-  function persistLocal() {
-    const payload = { doc: N.doc, revision: N.revision, shares: N.shares };
-    // OCStore 在写不进去时自己会提示一次(「本地存储已满」),这里只管换更小的副本:
-    // 本地只留索引(正文不落本地)保住离线副本的骨架,云端仍是权威副本。
-    if (window.OCStore.set(lsDocKey(), JSON.stringify(payload))) return;
-    const slim = {
+  // 本地只留索引(正文不落本地)的瘦身副本:保住离线副本的骨架,云端仍是权威副本。
+  // 两个入口共用它 —— set() 同步返回失败(退回 localStorage 且已满),以及
+  // IndexedDB 落盘失败(异步,只能靠 onWriteFail 回调补写)。
+  function slimDocPayload() {
+    return {
       doc: {
         folders: N.doc.folders,
         tombs: N.doc.tombs,
@@ -139,7 +138,12 @@
       shares: N.shares,
       _slim: true,
     };
-    window.OCStore.set(lsDocKey(), JSON.stringify(slim));
+  }
+  function persistLocal() {
+    const payload = { doc: N.doc, revision: N.revision, shares: N.shares };
+    // OCStore 在写不进去时自己会提示一次(「本地存储已满」),这里只管换更小的副本
+    if (window.OCStore.set(lsDocKey(), JSON.stringify(payload))) return;
+    window.OCStore.set(lsDocKey(), JSON.stringify(slimDocPayload()));
   }
   function persistUi() {
     try { localStorage.setItem(lsUiKey(), JSON.stringify(N.ui)); } catch (e) {}
@@ -434,7 +438,18 @@
   async function loadLocalDoc() {
     if (N._localLoaded) return;
     N._localLoaded = true;
-    if (window.OCStore) { try { await window.OCStore.ready([lsDocKey()]); } catch (e) { /* 退回 localStorage */ } }
+    if (window.OCStore) {
+      try { await window.OCStore.ready([lsDocKey()]); } catch (e) { /* 退回 localStorage */ }
+      // IndexedDB 落盘失败(多见于配额满)时 set() 已经同步报过成功,只能补一次瘦身重写。
+      // 每次打开笔记最多补一次,避免瘦身后的失败再次触发。
+      if (typeof window.OCStore.onWriteFail === 'function') {
+        window.OCStore.onWriteFail((key) => {
+          if (key !== lsDocKey() || N._slimRetried) return;
+          N._slimRetried = true;
+          try { window.OCStore.set(key, JSON.stringify(slimDocPayload())); } catch (e) { /* 忽略 */ }
+        });
+      }
+    }
     loadLocal();
     loadUi();
   }

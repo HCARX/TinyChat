@@ -564,7 +564,9 @@ php tests/attribution.php      # 完整性校验
 php tests/settings-sync.php    # 用户设置云同步（白名单收敛 / 分片落库 / 注销清理）
 php tests/model-groups.php    # 模型汇总（同名自动生成 / 候选过滤 / 轮询游标 / 请求展开）
 node tests/settings-merge.js   # 设置合并（逐键时间戳 / 删除墓碑 / 快照往返）
-node tests/local-store.js      # 本地大块数据存储契约（IndexedDB 优先 / 旧键迁移 / 兜底）
+node tests/local-store.js      # 本地大块数据存储契约（IndexedDB 优先 / 旧键迁移 / 兜底 / 换号清理）
+node tests/chat-image-inline.js # 正文内联图片契约（只内联缩略图 / 预算小于服务端上限 / 拿不到就不内联）
+node tests/chat-image-preview-gui.mjs  # 真浏览器：上传大图 → 落库 → 分享 → 分享页仍有图（含对照）
 
 # 端到端冒烟：起真实 PHP 服务 + mock 上游，跑完整业务流
 bash tests/e2e.sh
@@ -596,7 +598,9 @@ v1.x 的 `db.json` 会在首次访问时自动导入到 SQLite 并改名为 `db.
 
 `data/` 自带 `.htaccess` 拒绝 Web 直访（Nginx / IIS 配置示例里同样已屏蔽）；供应商 API Key 以 AES-256-GCM 加密存储，密钥与站点绑定，拿走文件也无法在其他站点解密。
 
-**浏览器本地副本**：服务端的数据库是权威副本；浏览器里那份「刷新即恢复」的即时副本放在 **IndexedDB**（`static/js/store.js`，会话列表、删除副本、笔记正文），不再用 localStorage —— 它的每源上限只有约 5MB，而会话消息 `content` 里内联着图片本体、`attachments[].dataUrl` 又存一份（一张 3MB 的图在本地就是 800 万字符），两三张图就写满，写满之后本机副本会静默落后于云端。升级后第一次打开会自动把 localStorage 里的旧副本搬进 IndexedDB 并删掉旧键；浏览器不给用 IndexedDB 时（隐私模式 / 策略禁用）自动退回 localStorage，功能照常。登录令牌、偏好设置、本地墓碑清单等小数据仍在 localStorage。
+**浏览器本地副本**：服务端的数据库是权威副本；浏览器里那份「刷新即恢复」的即时副本放在 **IndexedDB**（`static/js/store.js`，会话列表、删除副本、笔记正文），不再用 localStorage —— 它的每源上限只有约 5MB，而会话消息里带着图片本体，两三张图就写满，写满之后本机副本会静默落后于云端。升级后第一次打开会自动把 localStorage 里的旧副本搬进 IndexedDB 并删掉旧键；浏览器不给用 IndexedDB 时（隐私模式 / 策略禁用）自动退回 localStorage，功能照常；IndexedDB 也写不下时（配额满）改存一份瘦身副本并提示一次。**换号登录**会清掉上一位用户留在本机的大块副本（会话 / 删除副本 / 笔记正文），当前用户自己的副本不动 —— 退出登录不删自己的数据，避免丢掉还没推上云的最后一次编辑。登录令牌、偏好设置、本地墓碑清单等小数据仍在 localStorage。
+
+**图片在消息里的两份**：原图存在 `attachments[].dataUrl`（发给上游模型、对话页渲染用，服务端上限 8MB）；消息 `content` 里另内联一张**长边 ≤1024 的缩略图**（约 10 万字符）。这份缩略图不是冗余 —— **分享出去的对话只带走 `role`+`content`**（服务端 `tc_sanitize_share_messages`），它是分享页唯一的图源；而 `content` 在服务端有 200000 字符上限，内联原图会被整段切掉，分享页反而看不到图。缩略图拿不到时（例如几乎压不动的噪声图）就不内联，绝不退回原图。
 
 ## 附录：服务器配置示例
 

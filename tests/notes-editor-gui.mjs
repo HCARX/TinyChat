@@ -150,7 +150,7 @@ async function boot(width, height) {
     localStorage.setItem('oc_notes_ui_' + uid, JSON.stringify({ folderId: 'fe', mode: 'split', expanded: { fe: true } }));
   }, [login.token, PROV, userId]);
   await page.goto(BASE + '/', { waitUntil: 'domcontentloaded' });
-  await page.waitForFunction(() => !!(window.OCApp && window.OCApp.state && window.OCApp.state.user), null, { timeout: 30000 });
+  await page.waitForFunction(() => document.documentElement.getAttribute('data-boot') === 'done', null, { timeout: 30000 });
   await page.evaluate(() => { if (window.OCNotes) window.OCNotes.warmUp(); });
   await page.waitForFunction(() => !!(window.OCNotes && window.OCNotes.isReady && window.OCNotes.isReady()), null, { timeout: 30000 });
   await page.evaluate(() => window.OCNotes.open());

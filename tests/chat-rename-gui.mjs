@@ -102,7 +102,7 @@ await page.addInitScript(([token, uid]) => {
 }, [login.token, login.user.id]);
 
 await page.goto(BASE + '/', { waitUntil: 'domcontentloaded' });
-await page.waitForFunction(() => !!(window.OCApp && window.OCApp.state && window.OCApp.state.user), null, { timeout: 30000 });
+await page.waitForFunction(() => document.documentElement.getAttribute('data-boot') === 'done', null, { timeout: 30000 });
 await page.waitForSelector('.chat-item-wrap', { timeout: 20000 });
 
 const titles = () => page.evaluate(() => Array.from(document.querySelectorAll('.chat-title')).map((e) => e.textContent));

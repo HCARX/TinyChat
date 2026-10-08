@@ -161,7 +161,7 @@ async function pickerLabels(p) {
 // 前台就绪 = 登录态 + 模型列表已拉回来 + 模型名已渲染。
 // 只等 state.user 会在「模型还没到」时就去点选择器,那时点开只会得到一句「暂无可用模型」。
 async function waitFrontReady(p) {
-  await p.waitForFunction(() => !!(window.OCApp && window.OCApp.state && window.OCApp.state.user), null, { timeout: 30000 });
+  await p.waitForFunction(() => document.documentElement.getAttribute('data-boot') === 'done', null, { timeout: 30000 });
   await p.waitForFunction(() => (window.OCApp.state.models || []).length > 0, null, { timeout: 20000 });
   await p.waitForFunction(() => {
     const e = document.getElementById('model-name');
