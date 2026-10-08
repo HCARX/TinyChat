@@ -118,6 +118,18 @@ check('内容与上次成功推送一致时不再推送',
 check('指纹不含 baseRevision(否则永远对不上,优化等于没做)',
   /function syncContentKey\(\)[\s\S]{0,300}?deletedChats:/.test(appSrc)
   && !/function syncContentKey\(\)[\s\S]{0,300}?baseRevision/.test(appSrc));
+// 推送不能并发:两条推送各自带着同一个旧 baseRevision,后到的那条必被服务端判 409。
+// 用户看到的是控制台一条红字,严重时这一次改动没进云端(下次打开又被云端的旧版盖回来)。
+check('推送串行(有在飞的就复用它,不另起一条)',
+  /let pushInFlight = null;/.test(appSrc)
+  && /if \(pushInFlight\) \{ pushAgain = true; return pushInFlight; \}/.test(appSrc),
+  '并发推送会让两次请求带同一个 baseRevision,服务端必然回 409');
+check('在飞的那条落地后清空并补跑排队的推送',
+  /finally \{\s*pushInFlight = null;[\s\S]{0,300}?if \(pushAgain\) \{ pushAgain = false; scheduleCloudSync\(\); \}/.test(appSrc),
+  '没清空则后续再也推不出去;没补跑则排在后面的改动丢了');
+check('关页面时的补推不与在飞的推送重叠(那时 base 一定过期)',
+  /if \(syncUpToDate\(\)\) return;[\s\S]{0,400}?if \(pushInFlight\) return;/.test(appSrc.slice(appSrc.indexOf('beforeunload'))),
+  '卸载时收到 409 也没机会合并重推,白占一次限流名额');
 
 console.log('\n== 4. 加载顺序 ==');
 const html = read('index.html');

@@ -787,11 +787,19 @@ function ackDeleted(data) {
     persistDeletedCopies();
   }
 }
+// 同一时刻只允许一个推送在飞。两次推送重叠时,后一个带着「还没被响应更新的 baseRevision」
+// 出去,服务端就判为冲突(409)并回整表要求本端合并 —— 单设备上也会发生:生成过程中
+// 每一次流式存盘(700ms)都可能与前一次推送重叠,网页控制台里那条 409 就是它。
+// 冲突路径本身是安全的(合并后重推),但它是白白多出来的一次整表往返;串行化即消除。
+let pushInFlight = null;
+let pushAgain = false;
 async function pushChatsToCloud() {
   syncTimer = null;
   if (state._groupTurnActive) { scheduleCloudSync(); return; } // 群聊回合期间延后推送,回合结束再同步
   // 内容与上次成功推送的一模一样:服务端已经是这份数据,不必再走一趟(见 syncContentKey 注释)
   if (syncUpToDate()) return;
+  if (pushInFlight) { pushAgain = true; return pushInFlight; } // 让在飞的那次带你一程,别并排出去
+  pushInFlight = (async () => {
   const payload = syncPayload();
   try {
     const r = await api('/api/sync/chats', {
@@ -831,6 +839,12 @@ async function pushChatsToCloud() {
   } catch (e) {
     // 静默失败,下次修改会重试
   }
+  })();
+  try { await pushInFlight; } finally {
+    pushInFlight = null;
+    // 在飞的这次期间又有了新改动:补一次(此刻 baseRevision 已经是服务端刚返回的那个)
+    if (pushAgain) { pushAgain = false; scheduleCloudSync(); }
+  }
 }
 // 页面关闭/刷新前冲刷待同步数据(防抖定时器会被取消,这里兜底防止云端残留旧数据)
 document.addEventListener('visibilitychange', () => {
@@ -849,6 +863,9 @@ window.addEventListener('beforeunload', () => {
     syncTimer = null;
     // 内容与上次成功推送的一致就别再发一次:关页面时白推一遍整套会话(带图片附件)最浪费
     if (syncUpToDate()) return;
+    // 有推送正在飞:那一次还没被响应,现在发出去的 baseRevision 一定是旧的,必然 409
+    // (而且页面正在卸载,收到冲突也没机会合并重推)—— 不发,交给下次打开时的拉取合并。
+    if (pushInFlight) return;
     try {
       // keepalive 请求在页面卸载时仍能送达,且可带 Authorization header
       fetch(apiUrl('/api/sync/chats'), {

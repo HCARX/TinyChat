@@ -10,10 +10,11 @@
  *   1) 缩略图策略(直接调真函数):单图 ≤ 上限、可解码、不超预算、原图不被内联;
  *      小图原样内联(不做无谓重编码);正文很长时不再内联图片(给服务端上限留余量);
  *   2) 端到端:输入框真上传一张 900×900 的图 → 发出去,落库的 content 里没有原图、
- *      attachments 里原图完好、本地副本不再翻倍、气泡仍按原图渲染;
- *   3) 分享这条对话:分享页仍然有图(修复前是「图没了」),且存下来没被截断;
+ *      attachments 里原图完好、本地副本不再翻倍、气泡与灯箱(点开图片)仍按原图渲染;
+ *   3) 点开图片(灯箱)看到的是原图 PNG,不是正文里那张 WebP 缩略图;
+ *   4) 分享这条对话:分享页仍然有图(修复前是「图没了」),且存下来没被截断;
  *      对照组:历史那种「原图内联」的分享会被截断且分享页没图 —— 证明这条用例不是空转;
- *   4) 全流程无 JS 异常。
+ *   5) 全流程无 JS 异常。
  *
  * 需要 playwright 与 chromium;缺失时自动跳过并返回 0(不阻塞 CI)。
  */
@@ -167,6 +168,21 @@ const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } })
 const page = await ctx.newPage();
 page.on('pageerror', (e) => pageErrors.push(String((e && e.message) || e)));
 page.on('console', (m) => { if (m.type() === 'error') pageErrors.push('console: ' + m.text()); });
+// 同步推送的观测点。单设备下不该出现 409 自相冲突:两次推送重叠时,后一个会带着
+// 还没被响应更新的 baseRevision 出去,服务端只能回整表要求合并 —— 纯自找的一次往返。
+const syncStates = [];
+const syncConflicts = [];
+page.on('response', (r) => {
+  if (r.url().includes('/api/sync/chats')) {
+    if (r.request().method() === 'POST') {
+      syncStates.push(r.status());
+      if (r.status() === 409) syncConflicts.push(r.url().replace(BASE, ''));
+    }
+    return;
+  }
+  // 其它 4xx/5xx 一并记下来(例如图片被送去 MinerU 解析会 502 —— 本用例用的模型按视觉走,不该出现)
+  if (r.status() >= 400) console.log('   [http] ' + r.status() + ' ' + r.request().method() + ' ' + r.url().replace(BASE, ''));
+});
 await page.addInitScript(([token, pid]) => {
   localStorage.setItem('oc_token', token);
   // 打开页面就把模型定到 mock 上(供应商 + 模型走 ui.js 的偏好键),省去点选择器
@@ -275,7 +291,40 @@ check('附件里的原图完好(发给上游/渲染都靠它)', saved.attDataLen
 check('本地副本不再翻倍(小于原图的 1.5 倍:' + saved.storeLen + ' vs ' + saved.attDataLen + ')', saved.storeLen < saved.attDataLen * 1.5);
 check('气泡仍按原图渲染(解码宽度 900,src ' + saved.bubbleSrc + '…)', saved.bubbleWidth === 900);
 
-console.log('\n== 3. 分享这条对话:分享页仍然有图 ==');
+console.log('\n== 3. 点开图片(灯箱)看到的必须是原图,不能是正文那张缩略图 ==');
+await page.click('#messages .msg.user .msg-content img');
+await page.waitForSelector('.lightbox.show img', { timeout: 8000 }).catch(() => {});
+await sleep(400);
+const lightbox = await page.evaluate(async () => {
+  const lbImg = document.querySelector('.lightbox.show img');
+  const bubbleImg = document.querySelector('#messages .msg.user .msg-content img');
+  const src = lbImg ? String(lbImg.getAttribute('src') || '') : '';
+  const decoded = await new Promise((res) => {
+    const i = new Image();
+    i.onload = () => res({ w: i.naturalWidth, h: i.naturalHeight });
+    i.onerror = () => res({ w: 0, h: 0 });
+    i.src = src || 'data:,';
+  });
+  return {
+    shown: !!(lbImg && document.querySelector('.lightbox').classList.contains('show')),
+    kind: src.slice(0, 22),
+    len: src.length,
+    width: decoded.w,
+    bubbleDataLightbox: bubbleImg ? String(bubbleImg.getAttribute('data-lightbox') || '').length : 0,
+  };
+});
+console.log('   灯箱:' + lightbox.kind + '… ' + lightbox.len + ' 字符,解码 ' + lightbox.width + 'px');
+check('点图片确实弹出灯箱', lightbox.shown);
+check('灯箱里是**原图**(PNG,' + lightbox.len + ' 字符 = 附件原图长度),不是正文那张 WebP 缩略图',
+  lightbox.len === BIG_DATA_URL.length && /^data:image\/png/.test(lightbox.kind));
+check('灯箱内容与气泡一致(都是 attachments 里的原图)', lightbox.bubbleDataLightbox === BIG_DATA_URL.length);
+check('灯箱按原图分辨率解码(900,不是缩略图的 512)', lightbox.width === 900);
+await page.evaluate(() => {
+  const lb = document.querySelector('.lightbox');
+  if (lb) lb.classList.remove('show');
+});
+
+console.log('\n== 4. 分享这条对话:分享页仍然有图 ==');
 // 按客户端 shareableMessages 的口径,从本机会话取消息(与 UI 点「分享」完全一致)
 const shareMsgs = await page.evaluate(() => {
   const c = (window.OCApp.state.chats || [])[0] || {};
@@ -344,7 +393,14 @@ if (shareId) {
   }
 }
 
-console.log('\n== 4. 无 JS 异常 ==');
+console.log('\n== 5. 同步没有自相冲突(单设备下不该出现 409)==');
+console.log('   本轮推送 ' + syncStates.length + ' 次,状态 [' + syncStates.join(',') + ']');
+// 推送重叠时,后一个会带着还没被响应更新的 baseRevision 出去,服务端只能回整表要求合并。
+// 冲突路径本身安全(合并后重推),但那是纯自找的一次整表往返 —— 这里钉住「不再发生」。
+check('推送都是 200(没有 409 自相冲突):[' + syncStates.join(',') + ']',
+  syncStates.length > 0 && syncStates.every((c) => c === 200), syncConflicts.join(' '));
+
+console.log('\n== 6. 无 JS 异常 ==');
 check('全流程无 JS 报错', pageErrors.length === 0);
 if (pageErrors.length) console.log('    ' + pageErrors.slice(0, 5).join('\n    '));
 
