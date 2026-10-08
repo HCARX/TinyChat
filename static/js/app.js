@@ -1933,8 +1933,7 @@ function buildMsgNode(m, chat, idx) {
   if (m.error) {
     // 失败的那次若是 @模型重答,这条消息上还挂着别的模型的回答:标签条要照常画出来。
     // 否则报错会把之前那个模型的回答一起藏掉,再也切不回去。
-    // 汇总模型失败时同理:标签上写着 Auto@ 才知道失败的是哪一轮。
-    if (Array.isArray(m.versions) && (m.versions.length > 1 || replyTabNeededForAgg(m))) {
+    if (Array.isArray(m.versions) && m.versions.length > 1) {
       contentDiv.appendChild(buildReplyTabs(m, chat));
     }
     const kept = stripInterruptMarks(m.content);
@@ -1989,9 +1988,7 @@ function buildMsgNode(m, chat, idx) {
     // 多版本回答:浏览器标签条置顶,并且在思考链之上
     // (不同模型各有自己的思维链,切换模型时思考内容跟着变)
     // 生成中也挂着:新开的标签先出现,再在里面回答,和浏览器新建标签一样。
-    // 汇总模型即使只有一条回答也画出来:汇总 ID 背后是多个渠道,用户需要从标签上
-    // 一眼看出这一轮是汇总模型答的(标签写成 Auto@模型名,logo 随模型自动匹配)。
-    if (Array.isArray(m.versions) && (m.versions.length > 1 || replyTabNeededForAgg(m))) {
+    if (Array.isArray(m.versions) && m.versions.length > 1) {
       contentDiv.appendChild(buildReplyTabs(m, chat));
     }
     // 群聊成员名牌:角色、阶段、模型、时间
@@ -2261,8 +2258,8 @@ function providerNameOf(providerId) {
 function modelDisplayName(model) {
   const provider = state.providers.find((x) => x.id === state.currentProviderId);
   const name = model && (model.name || model.id);
-  // 汇总项不自带「供应商@」前缀(它的名字本身就是前台展示名)
-  if (provider && provider.agg) return name || '';
+  // 汇总模型统一显示 Auto@展示名,路由仍使用各自的 agg:<id>。
+  if (provider && provider.agg) return name ? 'Auto@' + name : '';
   return provider && name ? provider.name + '@' + name : (name || '');
 }
 // 按「供应商 + 模型」在模型切换列表里找同一项。
@@ -2370,9 +2367,9 @@ function availableModelItems() {
         : '';
       const item = {
         value: provider.id + '\n' + id, providerId: provider.id, modelId: id,
-        // 汇总项(多个渠道聚合成一个 ID)只显示模型名:前台看上去和一个普通模型
-        // 完全一样,不再拼成「汇总名@汇总名」这种重复的标签。
-        label: provider.agg ? name : (provider.name + '@' + name),
+        // 筛选分组与真实路由分离:所有汇总模型共用「自动切换」标签。
+        chipProviderId: provider.agg ? 'agg' : provider.id,
+        label: provider.agg ? ('Auto@' + name) : (provider.name + '@' + name),
         providerName: provider.name || '', search: provider.name + ' ' + id + ' ' + name,
         health: health.state, healthTitle: health.title, icon: logo, isImage, isVideo,
         agg: !!provider.agg, aggStrategy: provider.aggStrategy || '', aggCount: Number(provider.aggCount) || 0,
@@ -2405,6 +2402,9 @@ if (modelPickerEl) {
     const total = groups.reduce((n, g) => n + g.items.length, 0);
     if (!total) { toast('暂无可用模型', true); return; }
     const selected = state.currentProviderId && state.currentModel ? state.currentProviderId + '\n' + state.currentModel : null;
+    const providers = state.providers || [];
+    const chips = providers.filter((p) => !p.agg).map((p) => ({ value: p.id, label: p.name || p.id, icon: window.OC && OC.providerLogo ? OC.providerLogo(p.models, p.name) : '' }));
+    if (providers.some((p) => p.agg)) chips.unshift({ value: 'agg', label: '自动切换', icon: window.OC && OC.siteLogo ? OC.siteLogo() : '' });
     OC.openSelect(modelPickerEl, groups, {
       menuClass: 'oc-model-menu',
       fitWidth: true,
@@ -2412,7 +2412,8 @@ if (modelPickerEl) {
       pinned: pinnedProviderId() && pinnedModelId() ? pinnedProviderId() + '\n' + pinnedModelId() : null,
       searchable: total > 8,
       searchPlaceholder: '搜索供应商或模型…',
-      chips: (state.providers || []).length > 1 ? state.providers.map((p) => ({ value: p.id, label: p.name || p.id, icon: window.OC && OC.providerLogo ? OC.providerLogo(p.models, p.name) : '' })) : null,
+      chipKey: 'chipProviderId',
+      chips: providers.some((p) => p.agg) || chips.length > 1 ? chips : null,
       onSelect: async (val, item) => {
         const parts = String(val).split('\n');
         state.currentProviderId = parts[0];
@@ -3316,8 +3317,7 @@ function reRenderLastAssistant(assistantMsg) {
   if (!contentEl) return;
   contentEl.innerHTML = '';
   // 标签条在思考链之上:先挂标签,思考面板插到标签后面
-  // (汇总模型即使只有一条也画,让用户看得出这轮是 Auto@ 汇总答的)
-  if (Array.isArray(assistantMsg.versions) && (assistantMsg.versions.length > 1 || replyTabNeededForAgg(assistantMsg))) {
+  if (Array.isArray(assistantMsg.versions) && assistantMsg.versions.length > 1) {
     contentEl.appendChild(buildReplyTabs(assistantMsg, chat));
   }
   if (assistantMsg.participant) contentEl.appendChild(buildParticipantTag(assistantMsg));
@@ -9162,19 +9162,6 @@ function switchReplyVersionTo(msg, chat, target) {
   chat.updatedAt = Date.now();
   saveChats();
   renderMessages();
-}
-
-// 这条回答是不是「汇总模型」答的。汇总只有一条回答时也要画出标签条 ——
-// 汇总是多个渠道共用一个 ID,标签上写着 Auto@模型名 才能说明白这一轮是谁答的。
-function replyTabNeededForAgg(msg) {
-  if (!msg || msg.role !== 'assistant') return false;
-  const pid = String(msg.providerId || '');
-  if (/^agg:/.test(pid)) return true;
-  const hit = findModelItem(pid, String(msg.model || ''));
-  if (hit && hit.agg) return true;
-  // 刷新后供应商列表还没到,但版本里留着 providerId,同样按 agg: 前缀判定
-  const vs = Array.isArray(msg.versions) ? msg.versions : [];
-  return vs.length === 1 && /^agg:/.test(String(vs[0] && vs[0].providerId || ''));
 }
 
 // 一个回答版本在标签上的展示:和侧栏模型切换同一套 logo 与「供应商@模型」。

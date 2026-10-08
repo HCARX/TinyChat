@@ -626,18 +626,23 @@ UI.toggleTheme = function () {
     helvetica: ['fonts/Helvetica.woff2', 'woff2'],
     'alibaba-sans': ['fonts/AlibabaSans.woff2', 'woff2'],
   };
-  // 切片字体 CSS 只注入一次;链接带 OC_ASSET_V(theme-boot.js 从自身 ?v= 提取)做缓存刷新
-  const FONT_CSS_LINKED = {};
+  const CJK_FONT_CSS_ID = 'oc-cjk-font-css';
+  // 两款切片共用 TinyChat Text,只保留当前款,并让后面的本机字体规则优先。
   function ensureFontCss(key) {
-    if (FONT_CSS_LINKED[key]) return;
     const def = BUILTIN_FONT_FILES[key];
-    if (!def || !def.css) return;
-    FONT_CSS_LINKED[key] = true;
+    const href = def && def.css
+      ? fontAsset(def.css) + (window.OC_ASSET_V ? '?v=' + encodeURIComponent(window.OC_ASSET_V) : '')
+      : '';
+    const current = document.getElementById(CJK_FONT_CSS_ID);
+    if (current && current.getAttribute('href') === href) return;
+    if (current) current.remove();
+    if (!href) return;
     try {
       const link = document.createElement('link');
+      link.id = CJK_FONT_CSS_ID;
       link.rel = 'stylesheet';
-      link.href = fontAsset(def.css) + (window.OC_ASSET_V ? '?v=' + encodeURIComponent(window.OC_ASSET_V) : '');
-      document.head.appendChild(link);
+      link.href = href;
+      document.head.insertBefore(link, document.getElementById(FONT_RULE_ID));
     } catch (e) { /* 注入失败时退回系统字体 */ }
   }
   // 返回 @font-face 的 src 值;切片字体返回 null(改由外部 CSS 提供 unicode-range 分片)
@@ -648,7 +653,7 @@ UI.toggleTheme = function () {
       ? name === 'source-han-serif' || name === 'alibaba-puhuiti'
       : name === 'times-new-roman' || name === 'helvetica' || name === 'alibaba-sans';
     if (builtin && allowed) {
-      if (builtin.css) { ensureFontCss(name); return null; }
+      if (builtin.css) return null;
       return 'url("' + cssString(fontAsset(builtin[0])) + '") format("' + builtin[1] + '")';
     }
     if (name === 'system' || !name) {
@@ -663,6 +668,7 @@ UI.toggleTheme = function () {
       styleEl.id = FONT_RULE_ID;
       document.head.appendChild(styleEl);
     }
+    ensureFontCss(cjkValue);
     const family = 'TinyChat Text';
     const face = (src, range) => '@font-face {'
       + 'font-family:"' + family + '";font-style:normal;font-weight:200 900;font-display:swap;'

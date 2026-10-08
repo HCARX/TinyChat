@@ -25,24 +25,24 @@
 </script>
 <link rel="icon" type="image/svg+xml" href="./logo-icon.svg">
 <link rel="apple-touch-icon" href="./static/logo/app-icon-192.png">
-<link rel="stylesheet" href="./static/css/style.min.css?v=2.0.156">
-<link rel="stylesheet" href="./vendor/highlight/github.min.css?v=2.0.156" id="hljs-theme">
-<link rel="stylesheet" href="./vendor/katex/katex.min.css?v=2.0.156">
-<link rel="stylesheet" href="./static/css/enhanced.min.css?v=2.0.156">
-<link rel="stylesheet" href="./static/css/refine.min.css?v=2.0.156">
-<link rel="stylesheet" href="./static/css/redesign.min.css?v=2.0.156">
-<link rel="stylesheet" href="./static/css/polish.min.css?v=2.0.156">
-<link rel="stylesheet" href="./static/css/markdown.min.css?v=2.0.156">
-<link rel="stylesheet" href="./static/css/chrome.min.css?v=2.0.156">
-<link rel="stylesheet" href="./static/css/notes.min.css?v=2.0.156">
-<link rel="stylesheet" href="./static/css/im.min.css?v=2.0.156">
-<link rel="stylesheet" href="./static/css/web.min.css?v=2.0.156">
-<link rel="stylesheet" href="./static/css/toolbox.min.css?v=2.0.156">
-<link rel="stylesheet" href="./static/css/groupui.min.css?v=2.0.156">
-<script src="./static/js/theme-boot.min.js?v=2.0.156"></script>
+<link rel="stylesheet" href="./static/css/style.min.css?v=2.0.157">
+<link rel="stylesheet" href="./vendor/highlight/github.min.css?v=2.0.157" id="hljs-theme">
+<link rel="stylesheet" href="./vendor/katex/katex.min.css?v=2.0.157">
+<link rel="stylesheet" href="./static/css/enhanced.min.css?v=2.0.157">
+<link rel="stylesheet" href="./static/css/refine.min.css?v=2.0.157">
+<link rel="stylesheet" href="./static/css/redesign.min.css?v=2.0.157">
+<link rel="stylesheet" href="./static/css/polish.min.css?v=2.0.157">
+<link rel="stylesheet" href="./static/css/markdown.min.css?v=2.0.157">
+<link rel="stylesheet" href="./static/css/chrome.min.css?v=2.0.157">
+<link rel="stylesheet" href="./static/css/notes.min.css?v=2.0.157">
+<link rel="stylesheet" href="./static/css/im.min.css?v=2.0.157">
+<link rel="stylesheet" href="./static/css/web.min.css?v=2.0.157">
+<link rel="stylesheet" href="./static/css/toolbox.min.css?v=2.0.157">
+<link rel="stylesheet" href="./static/css/groupui.min.css?v=2.0.157">
+<script src="./static/js/theme-boot.min.js?v=2.0.157"></script>
 <!-- 性能门控:按后台设置决定是否加载渲染依赖(markdown-it 始终加载;KaTeX/highlight 可关)。
      必须在渲染依赖之前同步执行;具体的 <script> 标签由 perf.js 用 document.write 注入。 -->
-<script src="./static/js/perf.min.js?v=2.0.156"></script>
+<script src="./static/js/perf.min.js?v=2.0.157"></script>
 </head>
 <body>
   <!-- 移动端侧边栏遮罩 -->
@@ -1026,9 +1026,9 @@
             <span>邀请码</span>
             <input type="text" id="am-reg-invite" placeholder="向管理员索取" autocomplete="off" style="text-transform:uppercase">
           </label>
-          <label class="field hidden" id="am-reg-agree-row" style="flex-direction:row;align-items:flex-start;gap:8px">
-            <input type="checkbox" id="am-reg-agree" style="width:auto;margin-top:3px">
-            <span style="font-size:13px;line-height:1.6">我已阅读并同意<a href="/agreement" target="_blank" rel="noopener">《用户协议》</a></span>
+          <label class="field agree-row hidden" id="am-reg-agree-row">
+            <input type="checkbox" id="am-reg-agree">
+            <span class="agree-text">我已阅读并同意<a href="/agreement" target="_blank" rel="noopener">《用户协议》</a></span>
           </label>
           <button type="submit" class="btn primary w-full" id="am-register-btn">注册并登录</button>
           <p class="auth-switch"><a href="#" id="am-register-back">返回登录</a></p>
@@ -1049,26 +1049,26 @@
     <button class="btn small primary" id="guest-bar-login" type="button">登录 / 注册</button>
   </div>
 
-  <script defer src="./static/js/config.min.js?v=2.0.156"></script>
-  <script defer src="./static/js/store.min.js?v=2.0.156"></script>
-  <script defer src="./static/js/icons.min.js?v=2.0.156"></script>
-  <script defer src="./static/js/logos.min.js?v=2.0.156"></script>
-  <script defer src="./static/js/components.min.js?v=2.0.156"></script>
-  <script defer src="./static/js/ui.min.js?v=2.0.156"></script>
-  <script defer src="./static/js/settings-sync.min.js?v=2.0.156"></script>
-  <script defer src="./static/js/assistants.min.js?v=2.0.156"></script>
-  <script defer src="./static/js/conversations.min.js?v=2.0.156"></script>
-  <script defer src="./static/js/renderer.min.js?v=2.0.156"></script>
-  <script defer src="./static/js/reasoning.min.js?v=2.0.156"></script>
-  <script defer src="./static/js/office-formula-copy.min.js?v=2.0.156"></script>
-  <script defer src="./static/js/citations.min.js?v=2.0.156"></script>
-  <script defer src="./static/js/messages.min.js?v=2.0.156"></script>
-  <script defer src="./static/js/multimodal.min.js?v=2.0.156"></script>
-  <script defer src="./static/js/app.min.js?v=2.0.156"></script>
-  <script defer src="./static/js/groupui.min.js?v=2.0.156"></script>
-  <script defer src="./static/js/notes.min.js?v=2.0.156"></script>
-  <script defer src="./static/js/im.min.js?v=2.0.156"></script>
-  <script defer src="./static/js/web.min.js?v=2.0.156"></script>
-  <script defer src="./static/js/toolbox.min.js?v=2.0.156"></script>
+  <script defer src="./static/js/config.min.js?v=2.0.157"></script>
+  <script defer src="./static/js/store.min.js?v=2.0.157"></script>
+  <script defer src="./static/js/icons.min.js?v=2.0.157"></script>
+  <script defer src="./static/js/logos.min.js?v=2.0.157"></script>
+  <script defer src="./static/js/components.min.js?v=2.0.157"></script>
+  <script defer src="./static/js/ui.min.js?v=2.0.157"></script>
+  <script defer src="./static/js/settings-sync.min.js?v=2.0.157"></script>
+  <script defer src="./static/js/assistants.min.js?v=2.0.157"></script>
+  <script defer src="./static/js/conversations.min.js?v=2.0.157"></script>
+  <script defer src="./static/js/renderer.min.js?v=2.0.157"></script>
+  <script defer src="./static/js/reasoning.min.js?v=2.0.157"></script>
+  <script defer src="./static/js/office-formula-copy.min.js?v=2.0.157"></script>
+  <script defer src="./static/js/citations.min.js?v=2.0.157"></script>
+  <script defer src="./static/js/messages.min.js?v=2.0.157"></script>
+  <script defer src="./static/js/multimodal.min.js?v=2.0.157"></script>
+  <script defer src="./static/js/app.min.js?v=2.0.157"></script>
+  <script defer src="./static/js/groupui.min.js?v=2.0.157"></script>
+  <script defer src="./static/js/notes.min.js?v=2.0.157"></script>
+  <script defer src="./static/js/im.min.js?v=2.0.157"></script>
+  <script defer src="./static/js/web.min.js?v=2.0.157"></script>
+  <script defer src="./static/js/toolbox.min.js?v=2.0.157"></script>
 </body>
 </html>

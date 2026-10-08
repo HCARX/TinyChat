@@ -99,6 +99,18 @@ let login = {};
 try { login = JSON.parse(loginText); } catch (e) { console.error('✗ 登录响应非 JSON: ' + loginText.slice(0, 200)); process.exit(1); }
 const AUTH = { Authorization: 'Bearer ' + login.token, 'Content-Type': 'application/json' };
 await fetch(BASE + '/api/admin/settings', { method: 'POST', headers: AUTH, body: JSON.stringify({ notesEnabled: true }) });
+// 开启用户协议:注册勾选行只有开启后才可见(默认关闭),第 7 节要在真页面上量它
+const agreeSave = await fetch(BASE + '/api/admin/settings', {
+  method: 'POST', headers: AUTH,
+  body: JSON.stringify({ agreementEnabled: true, agreementHtml: '<p>自检用协议正文。</p>' }),
+});
+const agreeCfg = await (await fetch(BASE + '/api/config')).json();
+if (!agreeCfg.agreementEnabled) {
+  console.error('✗ 开启用户协议未生效:保存 HTTP ' + agreeSave.status
+    + ' /api/config.agreementEnabled=' + agreeCfg.agreementEnabled
+    + '\n  ' + (await agreeSave.text()).slice(0, 300));
+  process.exit(1);
+}
 
 const browser = await pw.chromium.launch();
 const pageErrors = [];
@@ -332,7 +344,315 @@ console.log('\n== 5. 窄屏账户页签:名字/注册时间不被挤成竖条 ==
   await ctxM.close();
 }
 
-console.log('\n== 6. 无未捕获异常 ==');
+console.log('\n== 6. 字体切换往返:实际中文字形与切片样式表 ==');
+{
+  await closeTop(page);
+  check('设置弹窗已打开(字体往返)', await openSettings(page));
+  await tab(page, 'look');
+
+  const probeText = '思源宋体中文字体切换测试';
+  const sliced = {
+    'source-han-serif': { file: 'SourceHanSerifCN.css', name: /SourceHanSerifCN/i },
+    'alibaba-puhuiti': { file: 'AlibabaPuHuiTi.css', name: /AlibabaPuHuiTi/i },
+  };
+  const FONT = () => {
+    const rules = document.getElementById('oc-font-rules');
+    const isSliced = (href) => /\/(SourceHanSerifCN|AlibabaPuHuiTi)\.css(?:\?|$)/.test(href || '');
+    const links = Array.from(document.querySelectorAll('link[rel="stylesheet"]'))
+      .filter((l) => isSliced(l.href))
+      .map((l) => ({
+        id: l.id, file: new URL(l.href).pathname.split('/').pop(),
+        beforeRules: !!rules && !!(l.compareDocumentPosition(rules) & Node.DOCUMENT_POSITION_FOLLOWING),
+      }));
+    const prefs = JSON.parse(localStorage.getItem('oc_prefs') || '{}');
+    const inlineRules = rules && rules.sheet ? Array.from(rules.sheet.cssRules) : [];
+    return {
+      prefCjk: prefs.fontCjk || '',
+      links,
+      activeLinks: document.querySelectorAll('#oc-cjk-font-css').length,
+      sheets: Array.from(document.styleSheets).filter((s) => isSliced(s.href))
+        .map((s) => new URL(s.href).pathname.split('/').pop()),
+      cleanInline: !!rules && !rules.children.length && !document.getElementById('oc-font-alias')
+        && !Array.from(document.querySelectorAll('style')).some((s) =>
+          /TinyChat Text:|(?:SourceHanSerifCN|AlibabaPuHuiTi)-\d+\.woff2/.test(s.textContent)),
+      latinRules: inlineRules.filter((r) => /fonts\/(?:AlibabaSans|TimesNewRoman|Helvetica)\.woff2/.test(r.cssText))
+        .map((r) => r.cssText).join('\n'),
+    };
+  };
+  const initial = await page.evaluate(FONT);
+  const cdp = await ctx.newCDPSession(page);
+  await cdp.send('DOM.enable');
+  await cdp.send('CSS.enable');
+  const addProbe = () => page.evaluate((text) => {
+    const probe = document.createElement('div');
+    probe.id = 'oc-cjk-font-probe';
+    probe.textContent = text;
+    probe.style.cssText = 'position:fixed;top:8px;left:8px;z-index:100000;pointer-events:none;font-family:var(--oc-font-family);font-size:24px;font-weight:400;font-style:normal;';
+    document.body.appendChild(probe);
+  }, probeText);
+  const renderedFonts = async () => {
+    await page.waitForFunction(() => {
+      const link = document.getElementById('oc-cjk-font-css');
+      return !link || !!link.sheet;
+    }, null, { timeout: 10000 });
+    await page.evaluate(async (text) => {
+      let timer;
+      try {
+        await Promise.race([
+          (async () => {
+            await document.fonts.load('400 24px "TinyChat Text"', text);
+            await document.fonts.ready;
+            await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+          })(),
+          new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('CJK font load timeout')), 15000); }),
+        ]);
+      } finally { clearTimeout(timer); }
+    }, probeText);
+    const { root } = await cdp.send('DOM.getDocument');
+    const { nodeId } = await cdp.send('DOM.querySelector', { nodeId: root.nodeId, selector: '#oc-cjk-font-probe' });
+    const { fonts } = await cdp.send('CSS.getPlatformFontsForNode', { nodeId });
+    return fonts.filter((f) => f.glyphCount > 0);
+  };
+  const verify = async (value, label, customFamily = '') => {
+    try {
+      await page.waitForFunction((v) => JSON.parse(localStorage.getItem('oc_prefs') || '{}').fontCjk === v,
+        value, { timeout: 5000 });
+      const fonts = await renderedFonts();
+      const state = await page.evaluate(FONT);
+      const def = sliced[value];
+      check(`${label}:偏好已写入`, state.prefCjk === value);
+      check(`${label}:只保留当前切片样式表(本机字体为零)`, def
+        ? state.activeLinks === 1 && state.links.length === 1 && state.links[0].id === 'oc-cjk-font-css'
+          && state.links[0].file === def.file && state.links[0].beforeRules
+          && state.sheets.length === 1 && state.sheets[0] === def.file
+        : state.activeLinks === 0 && state.links.length === 0 && state.sheets.length === 0);
+      check(`${label}:无别名或嵌套 style 残留`, state.cleanInline);
+      check(`${label}:拉丁字体规则保持不变`, state.latinRules === initial.latinRules);
+      const detail = fonts.map((f) => `${f.postScriptName || f.familyName}:${f.glyphCount}:${f.isCustomFont ? 'web' : 'local'}`).join(', ');
+      check(`${label}:Chromium 实际中文字形(${detail || '无字体'})`, fonts.length > 0
+        && fonts.reduce((n, f) => n + f.glyphCount, 0) >= Array.from(probeText).length
+        && fonts.every((f) => def
+          ? f.isCustomFont && def.name.test(f.postScriptName || f.familyName.replace(/\s+/g, ''))
+          : !f.isCustomFont && !/SourceHanSerifCN|AlibabaPuHuiTi/i.test(f.postScriptName || '')
+            && (!customFamily || f.familyName === customFamily)));
+      return fonts;
+    } catch (e) {
+      bad(`${label}:字体检测失败 ${e.message}`);
+      return [];
+    }
+  };
+  const setCjk = async (value, label, customFamily = '') => {
+    if (sliced[value] || value === 'system') {
+      await page.locator('#pref-font-cjk-select').click();
+      await page.locator(`.oc-menu-item[data-value="${value}"]`).click();
+    } else {
+      await page.locator('#pref-font-cjk').fill(value);
+      await page.locator('#pref-font-cjk').press('Enter');
+      await sleep(400);
+    }
+    return verify(value, label, customFamily);
+  };
+
+  try {
+    await addProbe();
+    await setCjk('source-han-serif', '选思源宋体');
+    await setCjk('alibaba-puhuiti', '切到普惠体');
+    await setCjk('source-han-serif', '切回思源宋体');
+    await setCjk('alibaba-puhuiti', '再次切到普惠体');
+    const systemFonts = await setCjk('system', '切到系统字体');
+    const customFamily = (systemFonts.find((f) => !f.isCustomFont) || {}).familyName;
+    if (customFamily) {
+      await setCjk('source-han-serif', '自定义前重新加载思源宋体');
+      await setCjk(customFamily, '输入自定义本机字体', customFamily);
+      await setCjk('alibaba-puhuiti', '自定义后重新加载普惠体');
+      await setCjk(customFamily, '再次输入自定义本机字体', customFamily);
+    } else { bad('未找到可用于自定义输入测试的本机中文字体'); }
+    await setCjk('source-han-serif', '刷新前选思源宋体');
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await addProbe();
+    await verify('source-han-serif', '刷新后思源宋体');
+  } finally {
+    await page.evaluate(() => { const probe = document.getElementById('oc-cjk-font-probe'); if (probe) probe.remove(); });
+    await cdp.detach();
+  }
+}
+
+console.log('\n== 7. 注册勾选行:勾选框与「我已阅读并同意…」同一行,不被挤成竖排 ==');
+{
+  // .field 是块布局;只有 flex-direction 不会启用 flex,复选框还需覆盖 input 的整行宽度。
+  const MEASURE = () => {
+    const row = document.querySelector('#auth-modal-register #am-reg-agree-row, #reg-agree-row');
+    if (!row) return { missing: true };
+    const cb = row.querySelector('input[type="checkbox"]');
+    const tx = row.querySelector('.agree-text');
+    if (!cb) return { missing: true, why: '找不到勾选框' };
+    const r = row.getBoundingClientRect(), c = cb.getBoundingClientRect();
+    const t = tx ? tx.getBoundingClientRect() : null;
+    const cs = getComputedStyle(cb);
+    const firstText = tx && Array.from(tx.childNodes).find((n) => n.nodeType === Node.TEXT_NODE && n.textContent.trim());
+    let first = null;
+    if (firstText) {
+      const range = document.createRange();
+      const start = firstText.textContent.search(/\S/);
+      range.setStart(firstText, start);
+      range.setEnd(firstText, start + 1);
+      first = range.getClientRects()[0] || null;
+    }
+    const zoom = parseFloat(getComputedStyle(document.documentElement).zoom) || 1;
+    return {
+      zoom, cbWidth: c.width, cbHeight: c.height,
+      alignment: { checkboxTop: c.top, checkboxBottom: c.bottom, firstTop: first && first.top, firstBottom: first && first.bottom, textFont: tx && getComputedStyle(tx).fontSize, textLineHeight: tx && getComputedStyle(tx).lineHeight },
+      firstLineAligned: !!first && first.top < c.bottom && first.bottom > c.top
+        && Math.abs((first.top + first.bottom - c.top - c.bottom) / 2) <= 4 * zoom,
+      firstGlyph: first ? { x: first.left + first.width / 2, y: first.top + first.height / 2 } : null,
+      rowDisplay: getComputedStyle(row).display,
+      hidden: row.classList.contains('hidden') || r.width === 0,
+      rowBox: Math.round(r.width) + 'x' + Math.round(r.height),
+      cbBox: Math.round(c.width) + 'x' + Math.round(c.height),
+      cbWidthStyle: cs.width,
+      textBox: t ? Math.round(t.width) + 'x' + Math.round(t.height) : '',
+      // 勾选框不该占满整行:超过行宽一半就算被 .field input{width:100%} 拉宽了
+      cbFillsRow: r.width > 0 && c.width > r.width * 0.5,
+      // 文字必须与勾选框垂直重叠(同一行);被挤到下一行时文字顶边会在勾选框底边之下
+      sameLine: !!(t && t.top < c.bottom - 2),
+      textLeftOfCb: !!(t && t.left >= c.right - 1),
+      rowOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    };
+  };
+
+  // /login 只服务未登录访客:带有效 token 访问会被 login.js 直接跳回主站
+  // (login.js 的 !verifyToken && !resetToken && localStorage 有 token 分支)。
+  // 所以量注册页必须用一个干净的浏览器上下文,否则 page.goto('/login') 会落到 '/' 上。
+  const ctxGuest = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  const gp = await ctxGuest.newPage();
+  gp.on('pageerror', (e) => pageErrors.push(String((e && e.message) || e)));
+  try {
+  for (const [w, h] of [[1280, 900], [390, 844]]) {
+    await gp.setViewportSize({ width: w, height: h });
+    await sleep(300);
+    await gp.goto(BASE + '/login', { waitUntil: 'load' });
+    // 注册行的显隐由 /api/config 的 agreementEnabled 决定,而这个 fetch 是异步的:
+    // 先等它落地(命中预期 class),否则会在「配置还没回来」时误判成不可见。
+    await gp.waitForFunction(() => {
+      const row = document.querySelector('#reg-agree-row');
+      return !!row && !row.classList.contains('hidden');
+    }, null, { timeout: 8000 });
+    // 注册表单默认也是隐藏的:先点「立即注册」切过去(真实路径,不做 DOM 手工开合)。
+    await gp.click('#show-register');
+    await sleep(600);
+    const opened = await gp.evaluate(() => {
+      const row = document.querySelector('#reg-agree-row');
+      if (!row) return 'missing@' + location.pathname;
+      if (!row.classList.contains('hidden')) return 'ok';
+      return 'hidden';
+    });
+    if (opened !== 'ok') {
+      bad(`${w}px 下 /login 的注册协议勾选行不可见(${opened})——协议开启未生效?`);
+      continue;
+    }
+    await sleep(300);
+    const m = await gp.evaluate(MEASURE);
+    if (m.missing) { bad(`${w}px 下勾选行缺失${m.why ? ': ' + m.why : ''}`); continue; }
+    check(`${w}px:勾选行是 flex 行布局(display=${m.rowDisplay})`, m.rowDisplay === 'flex');
+    check(`${w}px:复选框没有被拉成整行宽(${m.cbBox} vs 行宽 ${m.rowBox})`, !m.cbFillsRow);
+    check(`${w}px:复选框是固有尺寸 16px(实际 ${m.cbBox} / 声明 ${m.cbWidthStyle})`, m.cbBox === '16x16');
+    check(`${w}px:文字与勾选框在同一行(文字 ${m.textBox})`, m.sameLine);
+    check(`${w}px:文字排在勾选框右侧`, m.textLeftOfCb);
+    check(`${w}px:页面不横向溢出`, m.rowOverflow <= 1);
+  }
+  } finally { await ctxGuest.close(); }
+
+  const savedCfg = await (await fetch(BASE + '/api/config')).json();
+  const configureGuestModal = async (settings) => {
+    const r = await fetch(BASE + '/api/admin/settings', {
+      method: 'POST', headers: AUTH, body: JSON.stringify(settings),
+    });
+    if (!r.ok) throw new Error(`保存游客注册配置失败: HTTP ${r.status}`);
+    const cfg = await (await fetch(BASE + '/api/config')).json();
+    if (Object.entries(settings).some(([key, value]) => cfg[key] !== value)) {
+      throw new Error('游客注册配置未生效');
+    }
+  };
+  const screenshotDir = process.env.GUI_SCREENSHOTS === '1' ? join(ROOT, '.tmp', 'agreement-gui') : '';
+  if (screenshotDir) mkdirSync(screenshotDir, { recursive: true });
+  try {
+    // 禁用自动游客令牌,从真实未登录首页打开注册弹窗。
+    for (const enabled of [true, false]) {
+      await configureGuestModal({ guestEnabled: false, allowRegister: true, agreementEnabled: enabled });
+      for (const [w, h] of [[1280, 900], [390, 844]]) {
+        for (const fontSize of [14, 22]) {
+          const label = `主站弹窗 ${w}px / 字号 ${fontSize}px / 协议${enabled ? '开' : '关'}`;
+          const mc = await browser.newContext({ viewport: { width: w, height: h } });
+          const mp = await mc.newPage();
+          mp.on('pageerror', (e) => pageErrors.push(String((e && e.message) || e)));
+          await mp.addInitScript((size) => {
+            localStorage.setItem('oc_prefs', JSON.stringify({ fontSize: size, fontCjk: 'system', fontLatin: 'system' }));
+          }, fontSize);
+          try {
+            await mp.goto(BASE + '/', { waitUntil: 'load' });
+            await mp.waitForFunction(() => document.body.classList.contains('readonly-guest'),
+              null, { timeout: 10000 });
+            check(`${label}:真实未登录首页(无 oc_token)`,
+              new URL(mp.url()).pathname === '/' && await mp.evaluate(() => !localStorage.getItem('oc_token')));
+            const mobileMenu = mp.locator('#mobile-menu-btn');
+            if (await mobileMenu.isVisible()) await mobileMenu.click();
+            await mp.locator('#account-chip').click();
+            await mp.locator('#auth-modal:not(.hidden)').waitFor({ state: 'visible' });
+            await mp.locator('#am-go-register').click();
+            await mp.locator('#auth-modal-register:not(.hidden)').waitFor({ state: 'visible' });
+            const row = mp.locator('#am-reg-agree-row');
+            if (enabled) {
+              await row.waitFor({ state: 'visible' });
+              await row.scrollIntoViewIfNeeded();
+            } else await row.waitFor({ state: 'hidden' });
+            await mp.evaluate(() => document.fonts.ready);
+            const m = await mp.evaluate(MEASURE);
+            if (m.missing) { bad(`${label}:勾选行缺失`); continue; }
+            check(`${label}:实际字号缩放生效(zoom=${m.zoom})`, Math.abs(m.zoom - fontSize / 14) < 0.002);
+            if (enabled) {
+              check(`${label}:勾选行可见且为 flex`, !m.hidden && m.rowDisplay === 'flex');
+              check(`${label}:复选框保持 16px 固有尺寸(含 zoom)`, !m.cbFillsRow
+                && Math.abs(m.cbWidth - 16 * m.zoom) < 1 && Math.abs(m.cbHeight - 16 * m.zoom) < 1);
+              check(`${label}:复选框与文字首行对齐`, m.firstLineAligned && m.textLeftOfCb);
+              if (!m.firstLineAligned) console.log('    对齐度量: ' + JSON.stringify(m.alignment));
+              check(`${label}:页面不横向溢出`, m.rowOverflow <= 1);
+              const cb = mp.locator('#am-reg-agree');
+              const before = await cb.isChecked();
+              if (!m.firstGlyph) throw new Error('无法定位协议标签首字');
+              // 点击非链接文字,验证原生 label 行为,不直接改 checked。
+              await mp.mouse.click(m.firstGlyph.x, m.firstGlyph.y);
+              check(`${label}:点击标签文字切换勾选`, await cb.isChecked() === !before);
+              await mp.mouse.click(m.firstGlyph.x, m.firstGlyph.y);
+              check(`${label}:再次点击标签取消勾选`, await cb.isChecked() === before);
+              check(`${label}:标签点击未跳转或提交`, new URL(mp.url()).pathname === '/'
+                && await mp.locator('#auth-modal-register').isVisible()
+                && await mp.evaluate(() => !localStorage.getItem('oc_token')));
+            } else {
+              check(`${label}:协议关闭时不占布局`, m.hidden && m.rowDisplay === 'none');
+              check(`${label}:复选框与协议链接均不可见`, !(await mp.locator('#am-reg-agree').isVisible())
+                && !(await row.locator('a').isVisible()));
+            }
+            if (screenshotDir) {
+              await mp.screenshot({ path: join(screenshotDir, `main-register-${w}-${fontSize}-${enabled ? 'on' : 'off'}.png`) });
+            }
+          } catch (e) { bad(`${label}:检测失败 ${e.message}`); }
+          finally { await mc.close(); }
+        }
+      }
+    }
+  } finally {
+    await configureGuestModal({
+      guestEnabled: !!savedCfg.guestEnabled,
+      allowRegister: savedCfg.allowRegister !== false,
+      agreementEnabled: !!savedCfg.agreementEnabled,
+    });
+  }
+  if (screenshotDir) console.log('  协议截图: ' + screenshotDir);
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await sleep(300);
+}
+
+console.log('\n== 8. 无未捕获异常 ==');
 {
   const real = pageErrors.filter((e) => !/favicon|Failed to load resource|net::|ERR_/i.test(e));
   check('无 JS 异常' + (real.length ? ': ' + real.slice(0, 2).join(' | ') : ''), real.length === 0);

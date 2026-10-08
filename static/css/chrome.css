@@ -5794,3 +5794,35 @@ body.admin-body { overflow: visible !important; }
   padding: 8px 14px 4px;
 }
 .st-pager:empty { display: none; }
+
+/* 协议勾选行必须同时覆盖 .field 的块布局和 input 的整行宽度。 */
+.field.agree-row {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.agree-row input[type="checkbox"] {
+  flex: 0 0 auto;
+  width: 16px;
+  min-width: 16px;
+  max-width: 16px;
+  height: 16px;
+  min-height: 0;
+  margin: 3px 0 0;
+  padding: 0;
+  accent-color: var(--brand, var(--accent));
+  cursor: pointer;
+}
+/* 清掉 .field span 的下边距,窄屏允许文字在自己的列内换行。 */
+.agree-row .agree-text {
+  display: inline-block;
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  font-size: 13px !important;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  font-weight: 400;
+}

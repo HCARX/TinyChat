@@ -278,6 +278,7 @@
   window.OC.modelIcon = modelIcon;
   window.OC.imageLogo = () => IMAGE_LOGO;
   window.OC.videoLogo = () => VIDEO_LOGO;
+  window.OC.siteLogo = () => SITE_LOGO;
   window.OC.providerLogo = providerLogo;
   window.OC.chatLogo = chatLogo;
   window.OC.logoImg = logoImg;

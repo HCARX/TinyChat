@@ -569,6 +569,7 @@ node tests/chat-image-inline.js # 正文内联图片契约（只内联缩略图 
 node tests/chat-image-preview-gui.mjs  # 真浏览器：上传大图 → 落库 → 分享 → 分享页仍有图（含对照）
 node tests/model-groups-gui.mjs        # 真浏览器：汇总面板 / 前台只剩一条 / 弹窗排版几何 / Auto@ 标签
 node tests/storage-panel-gui.mjs       # 真浏览器：存储管理的文件清单默认折叠 / 分页 / 末页边界
+node tests/focus-ring-gui.mjs          # 真浏览器：聚焦环 / 主题色恢复默认 / 字体切换往返 / 注册勾选行排版
 
 # 端到端冒烟：起真实 PHP 服务 + mock 上游，跑完整业务流
 bash tests/e2e.sh
