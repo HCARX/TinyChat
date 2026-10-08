@@ -37,6 +37,8 @@
     previewFrom: 'list',               // 预览是从哪进来的:'list' 点卡片 | 'editor' 编辑器里的「运行预览」
     catFilter: '',                     // '' = 全部;'__none__' = 未分类;其余为分类 id
     busy: false, loading: false,
+    sysHtml: {},                       // 系统工具正文: id -> Promise<string>(按需取,同会话内不重复下载)
+    srcSeq: 0,                         // 取正文的序号:回来时对不上就说明用户已经走开了
     els: {}, tmpSeq: 0,
   };
 
@@ -337,6 +339,32 @@
     renderList();
   }
 
+  // 卡片上的体积。系统工具的正文不在列表下发里(见 sysHtmlOf),所以优先用服务端给的 size;
+  // 自己的工具正文就在手上,直接用它的长度。
+  function bytesOf(it) {
+    if (it && typeof it.size === 'number' && it.size >= 0) return it.size;
+    return String((it && it.html) || '').length;
+  }
+
+  // 系统工具的正文按需取。列表下发里刻意不带 html:重写版 12 套整页合计约 860KB(gzip 也有
+  // 230KB),而列表只需要标题/分类/体积。真正要用正文的只有三处 —— 预览、查看源码、加入我的
+  // 工具箱,那时按 pageUrl 取一次就好,取到的正是服务端存的同一份 HTML。同一会话内缓存,
+  // 反复点不重复下载。
+  function sysHtmlOf(it) {
+    const id = String((it && it.id) || '');
+    if (!id) return Promise.reject(new Error('这个工具没有可读取的 id'));
+    if (typeof it.html === 'string' && it.html) return Promise.resolve(it.html);
+    if (S.sysHtml[id]) return S.sysHtml[id];
+    const url = it.pageUrl ? apiUrlOf(it.pageUrl) : '';
+    if (!url) return Promise.reject(new Error('这个工具还没有可读取的地址，请刷新后重试'));
+    const pr = fetch(url, { credentials: 'same-origin' })
+      .then((r) => (r.ok ? r.text() : Promise.reject(new Error('HTTP ' + r.status))))
+      .then((t) => (t ? t : Promise.reject(new Error('读到的内容是空的'))))
+      .catch(() => { delete S.sysHtml[id]; throw new Error('读取系统工具的源码失败，请检查网络后重试'); });
+    S.sysHtml[id] = pr;
+    return pr;
+  }
+
   function cardHtml(it, kind) {
     const isSys = kind === 'sys';
     const cat = isSys ? catOf(it, 'sys') : catOf(it, 'mine');
@@ -353,7 +381,7 @@
       + '<span class="tb-card-text">'
       + '<span class="tb-card-name">' + esc(it.title || '未命名工具') + '</span>'
       + '<span class="tb-card-meta">' + (isSys ? '<span class="tb-card-badge">系统</span>' : '')
-      + esc(cname) + ' · ' + Math.max(1, Math.round(String(it.html || '').length / 1024)) + ' KB'
+      + esc(cname) + ' · ' + Math.max(1, Math.round(bytesOf(it) / 1024)) + ' KB'
       + (isSys ? '' : (' · ' + esc(fmtTime(it.updatedAt))))
       + '</span>'
       + '</span></div>'
@@ -442,15 +470,32 @@
     if (!it) return;
     S.editingId = '';
     S.els.name.value = String(it.title || '');
-    S.els.code.value = String(it.html || '');
+    // 正文要现取(见 sysHtmlOf),先占位再填。快照按占位内容取一次、填完再取一次 ——
+    // 中间这段时间里如果快照对不上,「有未保存改动」就会平白弹出来。
+    S.els.code.value = '正在读取源码…';
     renderCatSelect('');
     S.els.name.disabled = true;
     S.els.code.readOnly = true;
     S.els.cat.disabled = true;
     S.savedSnapshot = fingerprint();
     updateCount();
-    S.els.count.textContent = '系统工具（只读）· ' + draftHtml().length.toLocaleString() + ' 字符 · 点「取消」返回';
+    S.els.count.textContent = '系统工具（只读）';
     setView('editor');
+    const seq = ++S.srcSeq;
+    sysHtmlOf(it).then((html) => {
+      // 取回来的路上用户可能已经点了别的:序号变了、或已经不在这个视图里,就别再往框里写
+      if (seq !== S.srcSeq || S.view !== 'editor') return;
+      S.els.code.value = html;
+      S.savedSnapshot = fingerprint();
+      updateCount();
+      S.els.count.textContent = '系统工具（只读）· ' + html.length.toLocaleString() + ' 字符 · 点「取消」返回';
+    }).catch((e) => {
+      if (seq !== S.srcSeq || S.view !== 'editor') return;
+      S.els.code.value = '';
+      S.savedSnapshot = fingerprint();
+      updateCount();
+      toast(e.message || '读取系统工具的源码失败', true);
+    });
   }
 
   function editableOn() {
@@ -541,33 +586,58 @@
   function adoptSys(id) {
     const it = findSys(id);
     if (!it) return;
-    const dup = items().filter((x) => String(x.title || '') === String(it.title || '') && String(x.html || '') === String(it.html || ''));
-    if (dup.length) { toast('「' + (it.title || '系统工具') + '」已经在你的工具箱里了'); return; }
     if (items().length >= LIMITS.maxItems) { toast('我的工具已达到 ' + LIMITS.maxItems + ' 个上限，请先删掉一些', true); return; }
-    const prefill = { title: it.title || '系统工具', html: it.html || '' };
-    const srcCat = String(it.cat || '');
-    if (srcCat && catName(srcCat, 'sys')) {
-      if (!catName(srcCat, 'mine')) {
-        // 我的分类里还没有同名 id:直接沿用,分组看起来与系统区一致
-        if (!S.doc) S.doc = { cats: [], items: [], tombs: {} };
-        if (!Array.isArray(S.doc.cats)) S.doc.cats = [];
-        if (S.doc.cats.length < LIMITS.maxCats) {
-          S.doc.cats.push({ id: srcCat, name: catName(srcCat, 'sys') });
+    // 判重要比对正文,而正文要现取 —— 所以整段都是异步的(取回来之前不落地任何东西)
+    const seq = ++S.srcSeq;
+    sysHtmlOf(it).then((html) => {
+      if (seq !== S.srcSeq) return;
+      const dup = items().filter((x) => String(x.title || '') === String(it.title || '') && String(x.html || '') === html);
+      if (dup.length) { toast('「' + (it.title || '系统工具') + '」已经在你的工具箱里了'); return; }
+      const prefill = { title: it.title || '系统工具', html: html };
+      const srcCat = String(it.cat || '');
+      if (srcCat && catName(srcCat, 'sys')) {
+        if (!catName(srcCat, 'mine')) {
+          // 我的分类里还没有同名 id:直接沿用,分组看起来与系统区一致
+          if (!S.doc) S.doc = { cats: [], items: [], tombs: {} };
+          if (!Array.isArray(S.doc.cats)) S.doc.cats = [];
+          if (S.doc.cats.length < LIMITS.maxCats) {
+            S.doc.cats.push({ id: srcCat, name: catName(srcCat, 'sys') });
+            prefill.cat = srcCat;
+          }
+        } else {
           prefill.cat = srcCat;
         }
-      } else {
-        prefill.cat = srcCat;
       }
-    }
-    startEdit('', prefill);
-    toast('已复制到编辑器，改名或改代码后点「保存」就会加进你的工具箱');
+      startEdit('', prefill);
+      toast('已复制到编辑器，改名或改代码后点「保存」就会加进你的工具箱');
+    }).catch((e) => toast(e.message || '读取系统工具失败', true));
   }
 
   // ============ 预览(不透明源沙箱)============
   function runPreview(kind, id) {
     const it = (kind === 'sys') ? (id ? findSys(id) : null) : (id ? findItem(id) : null);
     if (id && !it) return;
-    S.previewHtml = it ? String(it.html || '') : draftHtml();
+    // 系统工具的正文要现取(见 sysHtmlOf):srcdoc 必须等正文到手再设,不能先开一个空框
+    if (it && typeof it.html !== 'string') {
+      const seq = ++S.srcSeq;
+      toast('正在读取工具…');
+      sysHtmlOf(it).then((html) => {
+        if (seq !== S.srcSeq) return;
+        openPreviewFrame(html, it, id, kind);
+      }).catch((e) => toast(e.message || '读取系统工具失败', true));
+      return;
+    }
+    openPreviewFrame(it ? String(it.html || '') : draftHtml(), it, id, kind);
+  }
+
+  // 站内主题(浅/深):工具页是**另一份文档**,拿不到本站的 data-theme。
+  // 两条分发路径各自接上,否则深色用户点开工具会突然看见一块白底。
+  function siteTheme() {
+    return document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light';
+  }
+
+  function openPreviewFrame(html, it, id, kind) {
+    S.previewHtml = html;
     S.previewRef = it ? { kind: kind === 'sys' ? 'sys' : 'mine', id: String(it.id) } : null;
     // 带着 id 进来的是从列表卡片点开的,预览里的「返回」该回列表;不带 id 的是编辑器里的
     // 「运行预览」,回编辑器接着改。写死一边都会让另一边从预览里掉到错误的页面。
@@ -585,6 +655,11 @@
     frame.srcdoc = S.previewHtml;   // 只用属性赋值,绝不拼进 innerHTML
     S.els.frameWrap.innerHTML = '';
     S.els.frameWrap.appendChild(frame);
+    // 预览是 srcdoc(不是导航),页内运行时已经带主题消息监听;这里把当前主题递进去,
+    // 让预览的观感与站内一致(在 iframe 的 load 之后再发,太早发文档里还没有监听者)
+    frame.addEventListener('load', () => {
+      try { frame.contentWindow.postMessage({ ocTheme: siteTheme() }, '*'); } catch (e) { /* 不透明源发不出也不影响使用 */ }
+    });
     setView('preview');
   }
 
@@ -594,8 +669,11 @@
     // 新标签页打开走服务端端点:响应头带 CSP sandbox,即使被直接导航也仍是不透明源。
     // 面板里的预览用 srcdoc(不产生可分享链接);这里才需要真实地址,靠签名 + Cookie 认人。
     const it = itemOf(kind, id);
-    const url = it && it.pageUrl ? apiUrlOf(it.pageUrl) : '';
-    if (!url) { toast('这个工具还没有可打开的地址，请先保存', true); return; }
+    const base = it && it.pageUrl ? apiUrlOf(it.pageUrl) : '';
+    if (!base) { toast('这个工具还没有可打开的地址，请先保存', true); return; }
+    // 新标签页是**独立导航**,没有 postMessage 这条路,只能把主题写进地址(工具页会读 ?theme=)。
+    // 签名只覆盖 id,多一个查询参数不影响校验。
+    const url = base + (base.indexOf('?') >= 0 ? '&' : '?') + 'theme=' + siteTheme();
     const w = window.open(url, '_blank', 'noopener');
     if (!w) toast('浏览器拦截了弹窗，请允许后重试', true);
   }

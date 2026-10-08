@@ -182,29 +182,43 @@
         if (t >= weekStart) return '本周';
         return '更早';
       };
-      const GROUP_ORDER = ['今天', '昨天', '本周', '更早'];
+      // 开放 API 产生的会话(调用 /v1 接口时服务端顺手记下的那份,聊天记录上带 apiKey)
+      // 在每个时间段里再单独成一组:「今天 API」紧跟「今天」、「昨天 API」紧跟「昨天」……
+      // 一个渠道一天可能攒下几十条接口调用,和手动聊的会话混在同一块里会把手动的挤到看不见。
+      // 判定交给 opts.isApiChat(app.js 与「显示 API 对话」开关同一口径),没给就全按普通对话
+      // 分组 —— 退化成加这个功能之前的样子,而不是崩掉。
+      const API_SUFFIX = ' API';
+      const GROUP_ORDER = [];
+      ['今天', '昨天', '本周', '更早'].forEach((base) => { GROUP_ORDER.push(base, base + API_SUFFIX); });
       const p2 = (n) => String(n).padStart(2, '0');
+      const isApiOpt = typeof opts.isApiChat === 'function' ? opts.isApiChat : null;
       const groups = {};
       filtered.forEach((c) => {
-        const g = timeGroupOf(c.updatedAt || c.createdAt);
+        const base = timeGroupOf(c.updatedAt || c.createdAt);
+        const g = (isApiOpt && isApiOpt(c)) ? base + API_SUFFIX : base;
         (groups[g] = groups[g] || []).push(c);
       });
       GROUP_ORDER.forEach((g) => {
         const list = groups[g] || [];
         if (!list.length) return;
-        // 分组折叠:今天默认展开,昨天及更早默认折叠(状态记忆在 localStorage)
+        const isApi = g.slice(-API_SUFFIX.length) === API_SUFFIX;
+        const baseGroup = isApi ? g.slice(0, -API_SUFFIX.length) : g;
+        // 分组折叠:今天默认展开,昨天及更早默认折叠(状态记忆在 localStorage)。
+        // 「今天 API」按「今天」的默认展开(折叠状态仍各记各的,收起一个不影响另一个)。
         const COLLAPSE_KEY = 'oc_chat_group_collapsed';
         let collapsedMap = {};
         try { collapsedMap = JSON.parse(localStorage.getItem(COLLAPSE_KEY) || '{}'); } catch (e) { collapsedMap = {}; }
-        const isCollapsed = collapsedMap[g] !== undefined ? collapsedMap[g] : (g !== '今天');
+        const isCollapsed = collapsedMap[g] !== undefined ? collapsedMap[g] : (baseGroup !== '今天');
         const section = document.createElement('div');
         section.className = 'chat-group-section' + (isCollapsed ? ' collapsed' : '');
         const title = document.createElement('div');
-        title.className = 'chat-group' + (g === '今天' ? ' is-today' : '');
+        title.className = 'chat-group' + (baseGroup === '今天' ? ' is-today' : '') + (isApi ? ' is-api' : '');
         title.setAttribute('role', 'button');
         title.setAttribute('tabindex', '0');
         title.setAttribute('aria-expanded', String(!isCollapsed));
-        title.setAttribute('data-tip', (isCollapsed ? '展开' : '收起') + g + '对话');
+        // 「展开今天 API 对话」比「展开今天 API对话」好读,Latin 后缀前后各留一个空格
+        const tipName = isApi ? baseGroup + ' API 对话' : g + '对话';
+        title.setAttribute('data-tip', (isCollapsed ? '展开' : '收起') + tipName);
         title.innerHTML = '<span class="chat-group-chev">' + ic('chevronDown', 11) + '</span>'
           + '<span class="chat-group-label">' + g + '</span>'
           + '<span class="chat-group-count">' + list.length + '</span>';
@@ -212,7 +226,7 @@
           const cur = section.classList.contains('collapsed');
           section.classList.toggle('collapsed', !cur);
           title.setAttribute('aria-expanded', String(cur));
-          title.setAttribute('data-tip', (cur ? '收起' : '展开') + g + '对话');
+          title.setAttribute('data-tip', (cur ? '收起' : '展开') + tipName);
           collapsedMap[g] = !cur;
           try { localStorage.setItem(COLLAPSE_KEY, JSON.stringify(collapsedMap)); } catch (e) {}
           if (window.OCSettingsSync) window.OCSettingsSync.touchUi('chatGroupCollapsed');

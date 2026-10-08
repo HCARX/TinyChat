@@ -904,15 +904,34 @@ function tc_toolbox_default_cats() {
 }
 
 /**
- * 系统工具库的初始内容:5 个分类 + 10 套常用小工具。
- * 每套都是独立整页(自带样式与脚本),与用户自存的工具格式完全一致。
+ * 2.0.145 出厂时的整份内容(冻结):5 分类 + 10 套工具,CSS 只有基础版、页面里没有下拉运行时。
+ * 只给升级迁移做「还是原文吗」的比对用,输出被 tests/toolbox.php 用固定哈希钉着。
  */
-function tc_toolbox_default_system() {
-    return array('cats' => tc_toolbox_default_cats(), 'items' => tc_toolbox_default_items('tc_toolbox_default_page'));
-}
-
-/** 2.0.145 出厂时的整份内容(冻结):只给升级迁移做「还是原文吗」的比对用。 */
 function tc_toolbox_default_system_v1() {
     return array('cats' => tc_toolbox_default_cats(), 'items' => tc_toolbox_default_items('tc_toolbox_default_page_v1'));
+}
+
+/**
+ * 2.0.147-2.0.151 出厂时的整份内容(冻结):工具正文一个字没动,只是页面包装换成了
+ * 「基础 CSS + 下拉补丁 CSS + 自绘下拉运行时」。同样只为迁移比对 —— 这一步之后
+ * 出厂内容改由 lib/toolbox-v3.php 提供(整套视觉与工具本身重写),所以要把上一版的
+ * 样子完整留档,否则升级时认不出「这套还是出厂原文」,也就无从替换。
+ */
+function tc_toolbox_default_system_v2() {
+    return array('cats' => tc_toolbox_default_cats(), 'items' => tc_toolbox_default_items('tc_toolbox_default_page_v2'));
+}
+
+/** 上一版的页面包装(冻结):基础 CSS + 下拉补丁 + 运行时脚本。 */
+function tc_toolbox_default_page_v2($title, $body, $script) {
+    return tc_toolbox_default_page_asm($title, $body, $script, TC_TOOLBOX_DEFAULT_CSS, TC_TOOLBOX_DEFAULT_UI_JS);
+}
+
+/**
+ * 当前出厂内容:交给 toolbox-v3.php(逐套工具一个文件,自动扫描)。
+ * 这里保留同名函数是为了不改动 core.php / api.php 里的调用点。
+ */
+function tc_toolbox_default_system() {
+    require_once __DIR__ . '/toolbox-v3.php';
+    return tc_toolbox_system_v3();
 }
 

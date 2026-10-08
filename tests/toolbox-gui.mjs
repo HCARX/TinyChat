@@ -23,6 +23,9 @@ const PORT = Number(process.env.TBOX_GUI_PORT || 8571);
 const MOCK_PORT = Number(process.env.TBOX_GUI_MOCK_PORT || 8572);
 const BASE = `http://127.0.0.1:${PORT}`;
 const ADMIN = { name: 'admin', password: 'tbox-pass' };
+// 内置系统工具箱的规格(套数 / 分类数):断言里到处要用,集中一处,新增工具只改这里
+const SYS_TOOLS = 12;
+const SYS_CATS = 6;
 
 let pass = 0, fail = 0;
 const ok = (m) => { pass++; console.log('  ✓ ' + m); };
@@ -363,7 +366,7 @@ console.log('\n== 5. 刷新后仍在(不是只存在内存里)==');
   check('重新加载后卡片还在', (await page.locator('#tb-grid-mine').innerText()).includes(TOOL_TITLE));
   const sub = await page.locator('#tb-sub').innerText();
   check('标题栏统计了条数与体积', /1 个我的工具/.test(sub) && /KB/.test(sub), sub);
-  check('标题栏也报出系统工具条数', /10 个系统工具/.test(sub), sub);
+  check('标题栏也报出系统工具条数', sub.includes(SYS_TOOLS + ' 个系统工具'), sub);
 }
 
 console.log('\n== 6. 删除后各设备都会同步移除 ==');
@@ -445,7 +448,7 @@ console.log('\n== 8. 窄屏可用 ==');
   await page.setViewportSize({ width: 1280, height: 860 });
 }
 
-console.log('\n== 9. 系统工具:内置 10 套、平台共用、可加入自己的工具箱 ==');
+console.log(`\n== 9. 系统工具:内置 ${SYS_TOOLS} 套、平台共用、可加入自己的工具箱 ==`);
 {
   await boot();
   await openPanel();
@@ -454,23 +457,23 @@ console.log('\n== 9. 系统工具:内置 10 套、平台共用、可加入自己
     && (await page.locator('#tb-sec-sys .tb-sec-title').innerText()).includes('系统工具'));
   check('系统区说明「由管理员维护、所有人可用」', (await page.locator('#tb-sec-sys').innerText()).includes('管理员'));
   const sysCount = await page.locator('#tb-grid-sys .tb-card:not(.tb-card-new)').count();
-  check('系统区有 10 套内置工具', sysCount === 10, sysCount);
-  check('系统卡片带「系统」角标(与自己的工具分得开)', (await page.locator('#tb-grid-sys .tb-card-badge').count()) === 10);
-  check('系统卡片有「加入我的工具箱」按钮', (await page.locator('#tb-grid-sys .tb-icon-btn[data-adopt]').count()) === 10);
+  check(`系统区有 ${SYS_TOOLS} 套内置工具`, sysCount === SYS_TOOLS, sysCount);
+  check('系统卡片带「系统」角标(与自己的工具分得开)', (await page.locator('#tb-grid-sys .tb-card-badge').count()) === SYS_TOOLS);
+  check('系统卡片有「加入我的工具箱」按钮', (await page.locator('#tb-grid-sys .tb-icon-btn[data-adopt]').count()) === SYS_TOOLS);
   check('系统工具内置了 Base64 编解码', (await page.locator('#tb-grid-sys').innerText()).includes('Base64 编解码'));
   check('分类芯片来自系统分类', (await page.locator('#tb-chips').innerText()).includes('随机生成'));
 
   // 加入我的工具箱:源码、标题、分类一起带过来,存下去就是我自己的那一份
   await page.click('#tb-grid-sys .tb-card[data-id="uuid"] .tb-icon-btn[data-adopt]');
   await page.waitForSelector('#tb-view-editor:not(.hidden)', { timeout: 10000 });
-  check('「加入我的工具箱」把源码带进编辑器', (await page.locator('#tb-name').inputValue()) === 'UUID 生成');
+  check('「加入我的工具箱」把源码带进编辑器', (await page.locator('#tb-name').inputValue()) === 'UUID 与 ULID 生成');
   check('带过来的是完整整页', (await page.locator('#tb-code').inputValue()).includes('<!doctype html>'));
   check('分类一并带了过来', (await page.locator('#tb-cat').inputValue()) === 'gen', await page.locator('#tb-cat').inputValue());
   await page.fill('#tb-name', '我的 UUID');
   await page.click('#tb-save');
   await page.waitForSelector('#tb-view-list:not(.hidden)', { timeout: 15000 });
   check('保存后出现在「我的工具」区', (await page.locator('#tb-grid-mine').innerText()).includes('我的 UUID'));
-  check('系统区那份原样保留(复制不是移动)', (await page.locator('#tb-grid-sys').innerText()).includes('UUID 生成'));
+  check('系统区那份原样保留(复制不是移动)', (await page.locator('#tb-grid-sys').innerText()).includes('UUID 与 ULID 生成'));
   const mineDoc = await (await fetch(BASE + '/api/sync/toolbox', { headers: AUTH })).json();
   check('落库的是我自己的一份,分类也存下了', mineDoc.doc.items.length === 1 && mineDoc.doc.items[0].cat === 'gen', mineDoc.doc.items);
 
@@ -573,57 +576,68 @@ sec9b: {
   // 崩掉,把本节余下用例连同后面几节一起截断(诊断信息全丢)。
   if (!fr) { await page.click('#tb-close'); await sleep(400); break sec9b; }
 
+  // 重写版里唯一的原生 select 是「时区」(单位换成了 seg 分段控件)。这条守的是
+  // 「工具页里的原生 select 会被页内运行时换成自绘控件」,换控件之后 value 语义不变,
+  // 工具脚本仍旧读写那个被隐藏的原生 select。
+  // 选项文字随环境本地化(「上海 Asia/Shanghai(UTC+8)」),所以断言一律按 **value** 走,
+  // 不按显示文字;能选哪些时区也取决于运行环境的 Intl(例如 UTC 不在 supportedValuesOf 里)。
   const info = await fr.evaluate(() => {
-    const sel = document.querySelector('#unit');
+    const sel = document.querySelector('#ts-tz');
     const box = sel && sel.previousElementSibling;
     return {
       native: !!sel,
       hidden: sel ? getComputedStyle(sel).display : '',
       box: box ? box.className : '',
       label: box ? box.textContent.trim() : '',
+      curLabel: sel && sel.selectedIndex >= 0 ? sel.options[sel.selectedIndex].textContent.trim() : '',
+      curValue: sel ? sel.value : '',
+      count: sel ? sel.options.length : 0,
     };
   });
-  check('原生 select 换成了页内自绘控件', /(^|\s)oc-sel(\s|$)/.test(info.box), JSON.stringify(info));
+  check('原生 select 换成了页内自绘控件', !!(info.native && /(^|\s)oc-sel(\s|$)/.test(info.box)), JSON.stringify(info));
   check('原生 select 被隐藏(留作取值载体,不删)', info.hidden === 'none', info.hidden);
-  check('控件显示当前选中项', info.label === '秒', info.label);
+  check('控件显示当前选中项', info.label === info.curLabel && info.label.length > 0, { label: info.label, want: info.curLabel });
+  check('时区列表是按环境动态填的(不是写死两条)', info.count >= 4, info.count);
 
-  await fr.evaluate(() => document.querySelector('#unit').previousElementSibling.click());
-  await sleep(200);
-  const items = await fr.evaluate(() => Array.from(document.querySelectorAll('.oc-sel-menu .oc-sel-item')).map((e) => e.textContent));
-  check('点开的是页内菜单而不是系统菜单', items.join('/') === '秒/毫秒', items.join('/'));
+  await fr.evaluate(() => document.querySelector('#ts-tz').previousElementSibling.click());
+  await sleep(250);
+  const items = await fr.evaluate(() => Array.from(document.querySelectorAll('.oc-sel-menu .oc-sel-item')).map((e) => e.textContent.trim()));
+  check('点开的是页内菜单而不是系统菜单', items.length === info.count && items.every((t) => t.length > 0), items.slice(0, 3));
 
-  await fr.evaluate(() => document.querySelectorAll('.oc-sel-menu .oc-sel-item')[1].click());
-  await sleep(200);
+  // 挑一个与当前不同的时区(优先 Asia/Tokyo,没有就退到下一个),选中它
+  const target = info.curValue === 'Asia/Tokyo'
+    ? (await fr.evaluate(() => Array.from(document.querySelector('#ts-tz').options).map((o) => o.value))).find((v) => v !== info.curValue)
+    : 'Asia/Tokyo';
+  const picked = await fr.evaluate((v) => {
+    const sel = document.querySelector('#ts-tz');
+    const idx = Array.from(sel.options).findIndex((o) => o.value === v);
+    if (idx < 0) return false;
+    const item = document.querySelectorAll('.oc-sel-menu .oc-sel-item')[idx];
+    if (!item) return false;
+    item.click();
+    return true;
+  }, target);
+  await sleep(300);
   const after = await fr.evaluate(() => {
-    const sel = document.querySelector('#unit');
-    return { value: sel.value, label: sel.previousElementSibling.textContent.trim(), menus: document.querySelectorAll('.oc-sel-menu').length };
+    const sel = document.querySelector('#ts-tz');
+    return { value: sel.value, label: sel.previousElementSibling.textContent.trim(), menus: document.querySelectorAll('.oc-sel-menu').length, want: sel.options[sel.selectedIndex].textContent.trim() };
   });
-  check('选中后写回原生 select(工具脚本读的就是它)', after.value === '1000', after.value);
-  check('控件文字跟着变', after.label === '毫秒', after.label);
+  check('选中后写回原生 select(工具脚本读的就是它)', picked && after.value === target, after.value);
+  check('控件文字跟着变', after.label === after.want && after.label.length > 0, { got: after.label, want: after.want });
   check('选完菜单自动收起', after.menus === 0, after.menus);
 
-  // 真的用它算一次:同一个数字按「秒」和「毫秒」必须算出两个不同的年份,
-  // 才能证明选中的单位真的进了 conv() 里的 n*(Number($('#unit').value)||1)。
-  // 注意取 1700000000:按秒算落在 1970,按毫秒算落在 2023 —— 两个单位结果必须不一样,
-  // 否则数字取巧(比如直接填毫秒值)会让这条断言在两个单位下都通过。
-  await fr.fill('#ts', '1700000000');
-  await fr.evaluate(() => document.querySelector('#unit').previousElementSibling.click());
-  await sleep(200);
-  await fr.evaluate(() => document.querySelectorAll('.oc-sel-menu .oc-sel-item')[0].click());
-  await sleep(200);
-  await fr.click('#go');
-  await sleep(250);
-  const asSec = (await fr.innerText('#out')).replace(/\s+/g, ' ');
-  check('按「秒」算:1700000000 落在 1970 年', /1970/.test(asSec), asSec.slice(0, 100));
-
-  await fr.evaluate(() => document.querySelector('#unit').previousElementSibling.click());
-  await sleep(200);
-  await fr.evaluate(() => document.querySelectorAll('.oc-sel-menu .oc-sel-item')[1].click());
-  await sleep(200);
-  await fr.click('#go');
-  await sleep(250);
-  const asMs = (await fr.innerText('#out')).replace(/\s+/g, ' ');
-  check('换成毫秒后同一个数字落在 2023 年(单位真进了计算)', /2023/.test(asMs) && !/1970/.test(asMs), asMs.slice(0, 100));
+  // 换时区必须真的进计算:输出区拿的是选中的时区算出来的偏移,时区名在旁边的 msg 里。
+  // 选中值没被读到的话,这两处都不会变。
+  const tzOut = await fr.evaluate(() => {
+    const box = document.querySelector('#ts-tz-out');
+    const msg = document.querySelector('#ts-tz-msg');
+    return {
+      out: (box ? box.textContent : '').replace(/\s+/g, ' ').trim(),
+      msg: (msg ? msg.textContent : '').replace(/\s+/g, ' ').trim(),
+    };
+  });
+  check('换时区后输出区跟着重算(偏移真的按新时区算)', /UTC[+-]\d/.test(tzOut.out), tzOut.out.slice(0, 120));
+  check('时区名也报了出来(定位到刚选的那个)', tzOut.msg.includes(target), { msg: tzOut.msg, target });
   check('没有留下半截的菜单', (await fr.evaluate(() => document.querySelectorAll('.oc-sel-menu').length)) === 0);
 
   await page.click('#tb-preview-back');
@@ -633,6 +647,10 @@ sec9b: {
   // 换控件后这条要单独验:原生 select 被隐藏了,它自己的 disabled 拦不住新控件上的点击。
   await page.click('#tb-grid-sys .tb-card[data-id="timestamp"] .tb-icon-btn[data-edit]');
   await page.waitForSelector('#tb-view-editor:not(.hidden)', { timeout: 10000 });
+  // 正文此时还在路上(按需取):视图先到、源码后到,所以这里等它填上 ——
+  // 这条同时验了「取正文」那条路径真的通(pageUrl 带签名,不需要额外鉴权头)
+  await page.waitForFunction(() => (document.querySelector('#tb-code').value || '').includes('<!doctype html>'), null, { timeout: 10000 }).catch(() => {});
+  check('系统工具的源码是打开时按需取到的(不在列表下发里)', (await page.locator('#tb-code').inputValue()).includes('<!doctype html>'));
   check('查看系统工具源码时控件是禁用态', (await page.locator('#tb-cat-box.disabled').count()) === 1);
   check('原生分类 select 也是 disabled', await page.locator('#tb-cat').isDisabled());
   // 直接派发 click(绕过 pointer-events),验的是控件自己的守卫而不是 CSS 挡住了鼠标
@@ -711,6 +729,11 @@ console.log('\n== 9c. 面板内的分类下拉:站内控件,菜单开着时 Esc 
   const sysItem = (doc.sys.items || []).find((x) => x.id === 'base64');
   check('同步接口把系统工具一起下发(前台不用再请求一次)', !!sysItem);
   check('系统工具的地址带 sys=1', /[?&]sys=1/.test(sysItem.pageUrl), sysItem.pageUrl);
+  // 正文不随列表走:12 套整页合计约 860KB(gzip 230KB),列表用不上;要正文的三处(预览/
+  // 查看源码/加入我的工具箱)按 pageUrl 现取。这条挡的是「又顺手把正文塞回下发里」。
+  const sysBodyKB = JSON.stringify(doc.sys).length / 1024;
+  check('列表下发里不带正文(整份不到 40KB)', sysBodyKB < 40, Math.round(sysBodyKB) + 'KB');
+  check('列表下发里每套都带了体积(卡片上的 KB 靠它)', (doc.sys.items || []).every((x) => !x.html && x.size > 100), (doc.sys.items || []).map((x) => x.size));
 
   const info = await page.evaluate(async (u) => {
     const r = await fetch(window.apiUrl ? window.apiUrl(u) : u, { credentials: 'include' });
@@ -763,7 +786,7 @@ console.log('\n== 9c. 面板内的分类下拉:站内控件,菜单开着时 Esc 
   const AUTH2 = { Authorization: 'Bearer ' + login2.token, 'Content-Type': 'application/json' };
   const doc2 = await (await fetch(BASE + '/api/sync/toolbox', { headers: AUTH2 })).json();
   check('别人的私人工具箱是空的', ((doc2.doc && doc2.doc.items) || []).length === 0, doc2.doc && doc2.doc.items);
-  check('系统工具对每个人都是同一份(10 套)', ((doc2.sys && doc2.sys.items) || []).length === 10, doc2.sys && doc2.sys.items.length);
+  check(`系统工具对每个人都是同一份(${SYS_TOOLS} 套)`, ((doc2.sys && doc2.sys.items) || []).length === SYS_TOOLS, doc2.sys && doc2.sys.items.length);
   check('系统工具的地址也是同一个签名(服务端算,不按人区分)', doc2.sys.items[0].pageUrl === doc.sys.items[0].pageUrl);
   const mineUrl = doc.doc.items[0].pageUrl;
   check('别人拿着我的工具链接也是 404(签名不等于有权)', (await (await fetch(BASE + mineUrl, { headers: AUTH2 })).status) === 404);
@@ -847,19 +870,19 @@ console.log('\n== 13. 后台面板:增删分类与工具(接口与界面两处�
   const admin = await openAdminPage();
   await admin.goto(BASE + '/admin#extensions/toolbox', { waitUntil: 'domcontentloaded' });
   await admin.waitForSelector('#toolbox-sys-body [data-tsys-item]', { timeout: 30000 });
-  check('后台「在线工具箱」面板列出了 10 套内置工具',
-    (await admin.locator('#toolbox-sys-body [data-tsys-item]').count()) === 10,
+  check(`后台「在线工具箱」面板列出了 ${SYS_TOOLS} 套内置工具`,
+    (await admin.locator('#toolbox-sys-body [data-tsys-item]').count()) === SYS_TOOLS,
     await admin.locator('#toolbox-sys-body [data-tsys-item]').count());
-  check('后台把内置分类也读出来了', (await admin.locator('#toolbox-sys-body .tbox-sys-chip').count()) === 5,
+  check('后台把内置分类也读出来了', (await admin.locator('#toolbox-sys-body .tbox-sys-chip').count()) === SYS_CATS,
     await admin.locator('#toolbox-sys-body .tbox-sys-chip').count());
 
   // 新增分类 → 新增工具并归到它下面 → 保存(整份下发,服务端只管清洗与上限)
   await admin.fill('#tsys-cat-new', '内部工具');
   await admin.click('#tsys-cat-add');
-  await admin.waitForFunction(() => document.querySelectorAll('#toolbox-sys-body .tbox-sys-chip').length === 6, null, { timeout: 10000 }).catch(() => {});
+  await admin.waitForFunction((n) => document.querySelectorAll('#toolbox-sys-body .tbox-sys-chip').length === n, SYS_CATS + 1, { timeout: 10000 }).catch(() => {});
   check('后台能新建分类', (await admin.locator('#toolbox-sys-body').innerText()).includes('内部工具'));
   await admin.click('#tsys-item-add');
-  await admin.waitForFunction(() => document.querySelectorAll('#toolbox-sys-body [data-tsys-item]').length === 11, null, { timeout: 10000 }).catch(() => {});
+  await admin.waitForFunction((n) => document.querySelectorAll('#toolbox-sys-body [data-tsys-item]').length === n, SYS_TOOLS + 1, { timeout: 10000 }).catch(() => {});
   const newRow = admin.locator('#toolbox-sys-body [data-tsys-item]').last();
   const newId = await newRow.getAttribute('data-tsys-item');
   check('新增行的源码框是打开状态(直接就能粘 HTML)', await newRow.locator('.tbox-sys-html').isVisible());
@@ -875,7 +898,7 @@ console.log('\n== 13. 后台面板:增删分类与工具(接口与界面两处�
   await newRow.locator('[data-tsys-field="html"]').fill('<!doctype html><html><body><p>ADMIN-SYS-MARK</p></body></html>');
   await admin.click('#toolbox-sys-save');
 
-  const afterAdd = await waitSysDoc((d) => ((d.doc && d.doc.items) || []).length === 11);
+  const afterAdd = await waitSysDoc((d) => ((d.doc && d.doc.items) || []).length === SYS_TOOLS + 1);
   const sysItems = (afterAdd.doc && afterAdd.doc.items) || [];
   const added = sysItems.find((x) => x.id === newId);
   check('后台保存真的落到系统工具箱里', !!added, sysItems.length);
@@ -890,7 +913,7 @@ console.log('\n== 13. 后台面板:增删分类与工具(接口与界面两处�
   await openPanel();
   await page.waitForSelector('#tb-grid-sys .tb-card-name', { timeout: 15000 });
   check('前台「系统工具」区立刻多出这一套',
-    (await page.locator('#tb-grid-sys .tb-card:not(.tb-card-new)').count()) === 11
+    (await page.locator('#tb-grid-sys .tb-card:not(.tb-card-new)').count()) === SYS_TOOLS + 1
     && (await page.locator('#tb-grid-sys').innerText()).includes('内部小工具'),
     await page.locator('#tb-grid-sys .tb-card:not(.tb-card-new)').count());
   await page.click('#tb-close');
@@ -903,10 +926,10 @@ console.log('\n== 13. 后台面板:增删分类与工具(接口与界面两处�
   await admin.waitForSelector('.oc-confirm-mask [data-act="ok"]', { timeout: 10000 });
   await admin.click('.oc-confirm-mask [data-act="ok"]');
   await admin.waitForFunction((id) => !document.querySelector('#toolbox-sys-body [data-tsys-item="' + id + '"]'), newId, { timeout: 10000 }).catch(() => {});
-  check('后台能删掉一套系统工具', (await admin.locator('#toolbox-sys-body [data-tsys-item]').count()) === 10);
+  check('后台能删掉一套系统工具', (await admin.locator('#toolbox-sys-body [data-tsys-item]').count()) === SYS_TOOLS);
   await admin.click('#toolbox-sys-save');
-  const afterDel = await waitSysDoc((d) => ((d.doc && d.doc.items) || []).length === 10);
-  check('删除也已落库', ((afterDel.doc && afterDel.doc.items) || []).length === 10,
+  const afterDel = await waitSysDoc((d) => ((d.doc && d.doc.items) || []).length === SYS_TOOLS);
+  check('删除也已落库', ((afterDel.doc && afterDel.doc.items) || []).length === SYS_TOOLS,
     ((afterDel.doc && afterDel.doc.items) || []).length);
 
   // 删分类:里面的工具不被删,归属被明确清掉(而不是留一个指向不存在分类的 id)
@@ -914,7 +937,7 @@ console.log('\n== 13. 后台面板:增删分类与工具(接口与界面两处�
   await sleep(300);
   await admin.click('#toolbox-sys-save');
   const afterCatDel = await waitSysDoc((d) => !((d.doc && d.doc.cats) || []).some((c) => c.name === '内部工具'));
-  check('删分类后系统工具数量不变', ((afterCatDel.doc && afterCatDel.doc.items) || []).length === 10);
+  check('删分类后系统工具数量不变', ((afterCatDel.doc && afterCatDel.doc.items) || []).length === SYS_TOOLS);
   check('已删分类不再下发', !((afterCatDel.doc && afterCatDel.doc.cats) || []).some((c) => c.name === '内部工具'));
 
   await admin.close();
@@ -938,6 +961,66 @@ console.log('\n== 14. 后台系统工具在真浏览器里同样是不透明源 
   check('内置工具页里读不到 localStorage', info.ls === 'blocked', info.ls);
   check('内置工具的脚本照常执行', info.title.length > 0, info.title);
   await pop.close();
+}
+
+console.log('\n== 14b. 工具页的主题与站内一致(面板预览 / 新标签页两条路)==');
+{
+  // 工具页是**另一份文档**,拿不到本站的 data-theme。深色用户点开工具却看见一块白底,
+  // 读代码看不出来 —— 必须真浏览器量 iframe 里的计算样式。
+  // 面板预览走 srcdoc + postMessage,新标签页是独立导航、只能把主题写进地址(?theme=)。
+  // 用站内真实的切主题入口(OCUI.applyTheme),不是往 localStorage 里塞一个值 ——
+  // 主题解析顺序是「外观偏好 > oc_theme > 系统偏好」,塞键会被偏好盖掉,量不到真东西。
+  const toggled = await page.evaluate(() => {
+    if (!window.OCUI || !window.OCUI.applyTheme) return '';
+    window.OCUI.applyTheme('dark');
+    return document.documentElement.getAttribute('data-theme');
+  });
+  check('深色站内:站内确实切到了 dark', toggled === 'dark', toggled);
+  await openPanel();
+  // 用时间戳工具开预览:它里面有个原生 select,toolFrame() 靠 .oc-sel 认帧
+  await page.click('#tb-grid-sys .tb-card[data-id="timestamp"] .tb-card-main');
+  await page.waitForSelector('#tb-view-preview:not(.hidden)', { timeout: 10000 });
+  await page.waitForSelector('.tb-frame', { timeout: 10000 });
+  const fr = await toolFrame();
+  check('深色站内:能拿到预览帧', !!fr);
+  if (fr) {
+    await sleep(600);   // 等 postMessage 到帧里(它在 iframe load 后发出)
+    const look = await fr.evaluate(() => {
+      const nums = (x) => (String(x).match(/\d+(\.\d+)?/g) || []).slice(0, 3).map(Number);
+      const avg = (x) => nums(x).reduce((a, b) => a + b, 0) / 3;
+      const bg = getComputedStyle(document.body).backgroundColor;
+      const fg = getComputedStyle(document.body).color;
+      return { theme: document.documentElement.getAttribute('data-oc-theme'), bg, fg, bgAvg: avg(bg), fgAvg: avg(fg) };
+    });
+    check('深色站内:预览里的工具页也切到了 dark(postMessage 传进去了)', look.theme === 'dark', look);
+    check('深色站内:预览不是白底(底色变暗、文字变亮)', look.bgAvg < 128 && look.fgAvg > look.bgAvg, { bg: look.bg, fg: look.fg });
+  }
+  await page.click('#tb-preview-back');
+  await page.waitForSelector('#tb-view-list:not(.hidden)', { timeout: 10000 });
+
+  // 新标签页:面板拼的地址里必须带上 theme=dark(签名只覆盖 id,多这个参数不影响校验)
+  const openedBefore = ctx.pages().length;
+  await page.click('#tb-grid-sys .tb-card[data-id="base64"] .tb-icon-btn[data-link]');
+  let pop = null;
+  for (let i = 0; i < 30 && !pop; i++) {
+    await sleep(200);
+    const ps = ctx.pages();
+    if (ps.length > openedBefore) pop = ps[ps.length - 1];
+  }
+  check('深色站内:新标签页那张也打开了', !!pop);
+  if (pop) {
+    check('深色站内:新标签页的地址带着 theme=dark', /[?&]theme=dark/.test(pop.url()), pop.url().slice(-44));
+    await pop.waitForFunction(() => document.readyState === 'complete', null, { timeout: 10000 }).catch(() => {});
+    await sleep(400);
+    const dark = await pop.evaluate(() => document.documentElement.getAttribute('data-oc-theme') === 'dark');
+    check('深色站内:新标签页里的工具页确实是 dark', dark, dark);
+    await pop.close();
+  }
+
+  // 收尾:把主题改回浅色,后面的用例与别的套件都按默认浅色跑
+  await page.evaluate(() => { if (window.OCUI && window.OCUI.applyTheme) window.OCUI.applyTheme('light'); });
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await boot();
 }
 
 console.log('\n== 15. 无 JS 异常 ==');

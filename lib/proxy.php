@@ -867,6 +867,39 @@ function tc_key_failure_retryable($res) {
     return false;
 }
 
+// 本次上游结果是否属于「该换下一个渠道重试」的失败(汇总组的故障自动转移)。
+// 比「换 Key」更宽:连接失败、限流、网关/服务端 5xx(整条渠道不可用),以及认证/权限类错误
+// (该渠道的 Key 全部无效,再换 Key 也没用,只能换渠道)。
+// 参数类 4xx(400/404/422 且与鉴权无关)不换渠道 —— 换一个渠道多半同样被拒,白花一次上游调用。
+function tc_candidate_failure_retryable($res) {
+    if (empty($res['ok'])) return true;                 // 连接失败
+    $status = (int) (isset($res['status']) ? $res['status'] : 0);
+    if (in_array($status, array(500, 502, 503, 504, 520, 521, 522, 523, 524), true)) return true;
+    // 认证/权限/配额类与「响应体指向鉴权问题」的 4xx:交给换 Key 的同一套判定,
+    // 该渠道整体不可用时(Key 全部无效)才会走到换渠道
+    return tc_key_failure_retryable($res);
+}
+
+// 切换到汇总组的第 $idx 个候选渠道,返回重建后的请求要素。
+// 候选可能属于不同供应商、且上游模型名不同,因此 URL、密钥链、请求体都要重算。
+// 只在「尚未向客户端发出任何字节」时调用(与换 Key 同一条纪律:发出去了就不能再换)。
+function tc_candidate_switch($candidates, $idx, $format, $body) {
+    $c = $candidates[$idx];
+    $provider = $c['provider'];
+    $body['model'] = $c['model'];
+    $url = tc_upstream_path(rtrim((string) $provider['baseUrl'], '/'), $format);
+    $chain = tc_provider_key_chain($provider, (string) $c['model']);
+    if (!$chain) $chain = array('');
+    return array(
+        'provider' => $provider,
+        'body' => $body,
+        'url' => $url,
+        'keyChain' => $chain,
+        'headers' => tc_upstream_auth_headers($format, $chain[0], true),
+        'payload' => tc_json_encode($body),
+    );
+}
+
 function tc_plain_text($s, $limit = 360) {
     $s = html_entity_decode(strip_tags((string) $s), ENT_QUOTES | ENT_HTML5, 'UTF-8');
     $s = preg_replace('/\s+/u', ' ', $s);
@@ -2552,29 +2585,86 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
         $resolved = tc_resolve_provider($db, $user, $b);
         if (!empty($resolved['error'])) tc_fail(400, $resolved['error']);
         $provider = $resolved['provider'];
+        // 模型汇总:resolve 命中汇总组时带回候选渠道列表,首个候选即本次首选(轮询已定序)。
+        // 这里把 body 里的 model 改写成「命中成员的真实模型名」,后续的元数据取数、思考规则、
+        // 日志、可用性统计、生图/生视频自动分流因此都落在真实模型上,各处置无需再适配汇总 ID。
+        $group = isset($resolved['group']) ? $resolved['group'] : null;
+        $candidates = isset($resolved['candidates']) && is_array($resolved['candidates']) ? $resolved['candidates'] : array();
+        $reqModelRaw = isset($b['model']) ? (string) $b['model'] : '';
+        if ($candidates) {
+            $provider = $candidates[0]['provider'];
+            $b['model'] = $candidates[0]['model'];
+        }
         // 开放接口的对外模型白名单:仅对 API 密钥调用生效,网页端不受影响
         if ($apiKeyOwner !== null) {
-            $reqModel = isset($b['model']) ? (string) $b['model'] : '';
-            if (!tc_api_model_exposed($db['settings'], isset($provider['id']) ? $provider['id'] : '', $reqModel)) {
-                tc_fail(403, '模型 ' . $reqModel . ' 未对开放接口开放，请联系管理员');
+            if ($group !== null) {
+                // 汇总 ID:自身被开放,或组内任一成员被开放,都算放行(存量白名单不必重配)
+                if (!tc_api_group_exposed($db['settings'], $db, $group)) {
+                    tc_fail(403, '模型 ' . $reqModelRaw . ' 未对开放接口开放，请联系管理员');
+                }
+            } else {
+                $reqModel = isset($b['model']) ? (string) $b['model'] : '';
+                if (!tc_api_model_exposed($db['settings'], isset($provider['id']) ? $provider['id'] : '', $reqModel)) {
+                    tc_fail(403, '模型 ' . $reqModel . ' 未对开放接口开放，请联系管理员');
+                }
             }
         }
         // 熔断:该模型近期持续全失败时快速失败,给出清晰提示(管理员豁免,便于现场排查)
         if (empty($user['admin'])) {
-            $circuitModel = isset($b['model']) ? (string) $b['model'] : (isset($provider['models'][0]['id']) ? (string) $provider['models'][0]['id'] : '');
-            $circuitMsg = tc_model_circuit_message($db, isset($provider['id']) ? $provider['id'] : '', $circuitModel);
-            if ($circuitMsg !== '') tc_fail(503, $circuitMsg);
+            if ($candidates) {
+                // 汇总:逐个候选检查,把已熔断的渠道剔出候选 —— 这正是汇总最实用的地方:
+                // 某个渠道整体挂掉时,请求自动落到还活着的渠道上,而不是一起 503。
+                $alive = array();
+                foreach ($candidates as $c) {
+                    if (tc_model_circuit_message($db, $c['providerId'], $c['model']) === '') $alive[] = $c;
+                }
+                if (!$alive) tc_fail(503, '模型 ' . $reqModelRaw . ' 的渠道当前都不可用（近 4 小时连续失败），请稍后再试');
+                if (count($alive) !== count($candidates)) {
+                    $candidates = array_values($alive);
+                    $provider = $candidates[0]['provider'];
+                    $b['model'] = $candidates[0]['model'];
+                }
+            } else {
+                $circuitModel = isset($b['model']) ? (string) $b['model'] : (isset($provider['models'][0]['id']) ? (string) $provider['models'][0]['id'] : '');
+                $circuitMsg = tc_model_circuit_message($db, isset($provider['id']) ? $provider['id'] : '', $circuitModel);
+                if ($circuitMsg !== '') tc_fail(503, $circuitMsg);
+            }
         }
         // 单价:模型级 cost 优先,未设置时回退供应商的 costPerCall
         $costModel = isset($b['model']) ? (string) $b['model'] : '';
         if ($costModel === '' && !empty($provider['models'][0]['id'])) $costModel = (string) $provider['models'][0]['id'];
         $cost = tc_model_cost($provider, $costModel);
         $free = false;
+        // 汇总组的预扣与上限:候选之间可能单价/窗口差很多,取「最保守」的那一侧。
+        //   预扣取各候选的最大单次费用 —— 故障转移可能落到更贵的成员上,按最小值预扣会少扣;
+        //   结算时仍按实际命中的成员多退少补(见下方 tc_final_cost 用的是获胜渠道)。
+        //   窗口/输出上限取各候选的最小值,保证同一个请求对任何一个候选都塞得下。
+        $caps = null;
+        if ($candidates) {
+            $gcost = 0;
+            $allFree = true;
+            $minOut = null;
+            $minCtx = null;
+            foreach ($candidates as $c) {
+                $cc = tc_model_cost($c['provider'], $c['model']);
+                if ($cc > $gcost) $gcost = $cc;
+                if (!isset($c['provider']['ownerId']) || (string) $c['provider']['ownerId'] !== (string) $user['id']) $allFree = false;
+                list($co, $ccx) = tc_model_meta_caps(tc_model_meta_get($db, $c['model']));
+                $minOut = $minOut === null ? $co : min($minOut, $co);
+                $minCtx = $minCtx === null ? $ccx : min($minCtx, $ccx);
+            }
+            // 组上配了单次扣费就按它(管理员显式定价优先),否则用候选最大值
+            if ($group !== null && $group['cost'] !== null) $gcost = (float) $group['cost'];
+            $cost = $gcost;
+            $free = $allFree;
+            $caps = array($minOut, $minCtx);
+        }
         // 内容审核:开启敏感词过滤时,先检查最后一条用户消息
         $modHit = tc_moderation_hit(isset($db['settings']['moderation']) && is_array($db['settings']['moderation']) ? $db['settings']['moderation'] : array(), tc_last_user_text($b, $format));
         if ($modHit !== '') tc_fail(400, '消息包含被禁止的内容，请修改后重试');
-        // 用户自备供应商(自己的 Key):不扣站点次数,也不设额度门槛
-        if (isset($provider['ownerId']) && (string) $provider['ownerId'] === (string) $user['id']) { $cost = 0; $free = true; }
+        // 用户自备供应商(自己的 Key):不扣站点次数,也不设额度门槛。
+        // 汇总组不适用这一条 —— 它的候选里只要有站点的渠道,就不能整体免单($free 已按「全部自备」算过)。
+        if (!$candidates && isset($provider['ownerId']) && (string) $provider['ownerId'] === (string) $user['id']) { $cost = 0; $free = true; }
         // 内部「AI 工具判定」(生图/联网/标题的调度预检)不向用户计费:它是用户看不见的
         // 基础步骤,对用户而言一条消息就是一次对话;上游成本由站点承担。
         // 仅限网页端内部调用 —— 开放 API 的外部请求不能靠自带 _purpose=judge 绕过计费。
@@ -2630,6 +2720,11 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
             // 取数用 $costModel:请求没带 model 时它是供应商首个模型,与服务端补默认模型的
             // 逻辑一致,否则「省略 model」的请求会取不到元数据、静默落到兜底值。
             'modelMeta' => tc_model_meta_get($db, $costModel),
+            // 汇总组的候选渠道(首个即本次首选)与组 ID。候选之间单价/窗口可能不同,
+            // 上限按候选最小值算好带出来(见上方 $caps),模板之外的请求无需再查库。
+            'candidates' => $candidates,
+            'aggId' => $group !== null ? (string) $group['id'] : '',
+            'caps' => $caps,
             'temperature' => isset($db['settings']['temperature']) ? $db['settings']['temperature'] : null,
             'thinking' => tc_normalize_thinking(isset($db['settings']['thinking']) ? $db['settings']['thinking'] : null),
             'imageGen' => $isImageModel,
@@ -2733,8 +2828,10 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
     // 输出上限与上下文窗口的唯一来源:「模型元数据」表(后台按模型名维护,全站渠道共用)。
     // 供应商模型项不再单独配置这两项;表里没有该模型时用兜底常量补齐,
     // 因此这里始终能拿到确定值,不存在「无上限」的请求。
+    // 汇总组例外:上限取候选中的最小值(在事务里算好带出来),保证请求对每个候选都塞得下。
     $meta = isset($ctx['modelMeta']) ? $ctx['modelMeta'] : null;
-    list($outCap, $ctxWindow) = tc_model_meta_caps($meta);
+    if (!empty($ctx['caps'])) list($outCap, $ctxWindow) = $ctx['caps'];
+    else list($outCap, $ctxWindow) = tc_model_meta_caps($meta);
     // 上下文窗:输入与输出共用一个总窗口,先粗估输入 token,把输出压进「窗口 − 预估输入」内
     $promptEst = tc_estimate_body_tokens($body);
     $outCap = min($outCap, max(256, $ctxWindow - $promptEst));
@@ -2759,8 +2856,32 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
     $headers = tc_upstream_auth_headers($format, $keyChain[0], true);
     $payload = tc_json_encode($body);
     $reasoningRetried = false;
+    // 汇总组的候选渠道:首个已由 resolve 选好,其余留作「换渠道重试」的备选。
+    // 换渠道只在「尚未向客户端发出任何字节」时进行(与换 Key 同一条纪律),因此不会重复计费。
+    // 候选是在上面的 tc_with_db 闭包里算出来的,只经 $ctx 带出来;事务闭包的局部变量在这里
+    // 并不存在,漏掉这一行会让候选相关的分支都读到一个未定义变量(汇总请求直接 500)。
+    $candidates = isset($ctx['candidates']) && is_array($ctx['candidates']) ? $ctx['candidates'] : array();
+    $candIdx = 0;
     $ends = tc_endpoints();
     $ep = isset($ends[$format]) ? $ends[$format] : $format;
+    // 尝试切到下一个候选渠道;成功返回 true。地址不安全(内网/保留地址)的候选直接跳过。
+    // 由引用改写:让两个重试循环共用同一段切换逻辑。
+    $nextCandidate = function () use (&$candIdx, &$provider, &$body, &$url, &$keyChain, &$keyIdx, &$headers, &$payload, $candidates, $format) {
+        while ($candIdx + 1 < count($candidates)) {
+            $candIdx++;
+            $sw = tc_candidate_switch($candidates, $candIdx, $format, $body);
+            if (!tc_upstream_url_is_safe($sw['url'])) continue;
+            $provider = $sw['provider'];
+            $body = $sw['body'];
+            $url = $sw['url'];
+            $keyChain = $sw['keyChain'];
+            $keyIdx = 0;
+            $headers = $sw['headers'];
+            $payload = $sw['payload'];
+            return true;
+        }
+        return false;
+    };
 
     if ($isStream) {
         @ignore_user_abort(true);
@@ -2803,7 +2924,23 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
                 $headers = tc_upstream_auth_headers($format, $keyChain[$keyIdx], true);
                 continue;
             }
-            if (!( !empty($res['ok']) && !empty($res['status']) && in_array((int) $res['status'], array(429, 500, 502, 503, 504), true) && $attempt < 2 )) break;
+            if (!( !empty($res['ok']) && !empty($res['status']) && in_array((int) $res['status'], array(429, 500, 502, 503, 504), true) && $attempt < 2 )) {
+                // 汇总:本渠道的密钥链已走完且属于渠道级失败时,换下一个候选渠道再试。
+                // 只有 !$headersSent(尚未发出任何字节)才安全:此时回调从未执行,没计费也没写客户端。
+                if (!$headersSent && $candIdx + 1 < count($candidates) && tc_candidate_failure_retryable($res)) {
+                    if ($nextCandidate()) {
+                        // 任务条目上的渠道/模型跟着换,免得前端进度条写着已被换掉的渠道
+                        tc_task_finish($taskId, 'failed', 'failover');
+                        $taskId = tc_uid(12);
+                        tc_task_create($taskId, $user['id'], array('provider' => $provider['name'], 'model' => isset($body['model']) ? $body['model'] : '', 'format' => $format));
+                        header('X-Oc-Task-Id: ' . $taskId);
+                        $errorBuf = '';
+                        $attempt = 0;
+                        continue;
+                    }
+                }
+                break;
+            }
             sleep(1);
         } while (true);
 
@@ -2928,7 +3065,14 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
             $headers = tc_upstream_auth_headers($format, $keyChain[$keyIdx], false);
             continue;
         }
-        if (!( !empty($res['ok']) && !empty($res['status']) && in_array((int) $res['status'], array(429, 500, 502, 503, 504), true) && $attempt < 2 )) break;
+        if (!( !empty($res['ok']) && !empty($res['status']) && in_array((int) $res['status'], array(429, 500, 502, 503, 504), true) && $attempt < 2 )) {
+            // 汇总:本渠道的密钥链已走完且属于渠道级失败时,换下一个候选渠道再试一次。
+            // 非流式尚未向客户端返回任何内容,切换安全(与换 Key 同一条纪律)。
+            if ($candIdx + 1 < count($candidates) && tc_candidate_failure_retryable($res)) {
+                if ($nextCandidate()) { $attempt = 0; continue; }
+            }
+            break;
+        }
         sleep(1);
     } while (true);
     if (!empty($res['ok']) && !empty($res['status']) && $res['status'] >= 400) {
@@ -3145,6 +3289,30 @@ function tc_api_model_exposed($settings, $providerId, $modelId) {
     $list = isset($settings['apiExposedModels']) && is_array($settings['apiExposedModels']) ? $settings['apiExposedModels'] : array();
     if (!$list) return true;
     return in_array($providerId . '|' . $modelId, $list, true);
+}
+
+// 汇总组是否对开放接口暴露。白名单为空表示不限制;否则「agg|<组ID>」命中,
+// 或该组的任一成员模型被单独开放,都算暴露 —— 启用汇总前配好的白名单不必重配。
+function tc_api_group_exposed($settings, $db, $group) {
+    $list = isset($settings['apiExposedModels']) && is_array($settings['apiExposedModels']) ? $settings['apiExposedModels'] : array();
+    if (!$list) return true;
+    if (in_array('agg|' . (string) $group['id'], $list, true)) return true;
+    if (!empty($group['auto'])) {
+        $match = (string) (isset($group['matchId']) && $group['matchId'] !== '' ? $group['matchId'] : $group['id']);
+        foreach ((isset($db['providers']) ? $db['providers'] : array()) as $p) {
+            if (!is_array($p)) continue;
+            foreach ((isset($p['models']) ? $p['models'] : array()) as $m) {
+                if (!is_array($m) || !isset($m['id']) || (string) $m['id'] !== $match) continue;
+                if (in_array((string) $p['id'] . '|' . $match, $list, true)) return true;
+            }
+        }
+        return false;
+    }
+    foreach ((isset($group['members']) && is_array($group['members']) ? $group['members'] : array()) as $m) {
+        $key = (string) (isset($m['providerId']) ? $m['providerId'] : '') . '|' . (string) (isset($m['model']) ? $m['model'] : '');
+        if (in_array($key, $list, true)) return true;
+    }
+    return false;
 }
 
 // ---- 图像生成代理:POST {baseUrl}/images/generations(OpenAI 兼容),按次计费 ----
@@ -4398,15 +4566,40 @@ function tc_api_v1_models() {
         if (!$user) tc_fail(401, 'API 密钥对应的用户不存在');
         $allowed = tc_user_access($db, $user);
         $data = array();
+        // 模型汇总:被汇总组收纳的原始模型不再单独列出,改由汇总 ID 代表 ——
+        // 开放接口因此拿到的是「一个 ID 背后多条渠道」,客户端代码无需改动即获得故障转移。
+        $aggOn = tc_model_groups_on($db);
+        $memberKeys = $aggOn ? tc_model_group_member_keys($db, $user) : array();
+        $seen = array();
         foreach (tc_visible_providers_of($db, $user) as $p) {
             $vis = tc_visible_provider($user, $p, $allowed);
             if (!$vis) continue;
             $ownerName = (isset($p['name']) && $p['name'] !== '' ? $p['name'] : 'tinychat');
             foreach ((isset($vis['models']) ? $vis['models'] : array()) as $m) {
                 if (!is_array($m) || !isset($m['id']) || $m['id'] === '') continue;
+                $mid = (string) $m['id'];
+                if (isset($memberKeys[(string) $p['id'] . '|' . $mid])) continue;
                 // 对外模型白名单:未开放的模型不出现在 /v1/models 里
-                if (!tc_api_model_exposed($db['settings'], isset($p['id']) ? $p['id'] : '', (string) $m['id'])) continue;
-                $data[] = array('id' => (string) $m['id'], 'object' => 'model', 'created' => 0, 'owned_by' => $ownerName);
+                if (!tc_api_model_exposed($db['settings'], isset($p['id']) ? $p['id'] : '', $mid)) continue;
+                if (isset($seen[$mid])) continue;   // 同名模型跨渠道只列一次,避免列表里重复
+                $seen[$mid] = true;
+                $data[] = array('id' => $mid, 'object' => 'model', 'created' => 0, 'owned_by' => $ownerName);
+            }
+        }
+        if ($aggOn) {
+            foreach (tc_model_groups_ordered($db) as $g) {
+                list($candidates, $err) = tc_model_group_candidates($db, $user, $g);
+                if ($err !== '' || !$candidates) continue;
+                if (!tc_api_group_exposed($db['settings'], $db, $g)) continue;
+                $gid = (string) $g['id'];
+                if (isset($seen[$gid])) continue;
+                $seen[$gid] = true;
+                $data[] = array(
+                    'id' => $gid,
+                    'object' => 'model',
+                    'created' => 0,
+                    'owned_by' => isset($g['label']) && $g['label'] !== '' ? $g['label'] : $gid,
+                );
             }
         }
         tc_json(200, array('object' => 'list', 'data' => $data));

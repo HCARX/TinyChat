@@ -547,9 +547,15 @@ function fillLogoAvatar(el) {
 }
 
 // ============ 会话 / 侧边栏 ============
+// 会话列表与「删除副本」里带着图片本体(data URL 一份内联在 content、一份在 attachments),
+// 一张 300KB 的图在本地就是 80 万字符,远不是 localStorage 那 5MB 能长期装下的东西 ——
+// 统一走 OCStore(IndexedDB 优先,写不下时退回 localStorage)。键名只在这两个函数里拼,
+// 别再手写字符串:散开写迟早漏改一处,那一处又会退回 5MB 的旧存储。
+function chatsKey() { return 'oc_chats_' + (state.user ? state.user.id : ''); }
+function delCopiesKey() { return 'oc_chat_delcopies_' + (state.user ? state.user.id : ''); }
 function loadChats() {
   try {
-    state.chats = window.OCConversations.normalize(JSON.parse(localStorage.getItem('oc_chats_' + state.user.id) || '[]'));
+    state.chats = window.OCConversations.normalize(JSON.parse(window.OCStore.get(chatsKey()) || '[]'));
     state.chats.forEach((c) => (c.messages || []).forEach((m) => { if (m && m.role === 'assistant') m._voteSent = m.vote || null; }));
   } catch (e) { state.chats = []; }
   // 刷新/重进页面时,把上次没跑完的「流式回答 / 生图占位」定稿:普通对话请求没有服务端任务可续,
@@ -585,7 +591,7 @@ function loadChats() {
     state.deletedIds = Array.isArray(tombs) ? tombs.filter((x) => typeof x === 'string') : [];
   } catch (e) { state.deletedIds = []; }
   try {
-    const copies = JSON.parse(localStorage.getItem('oc_chat_delcopies_' + state.user.id) || '{}');
+    const copies = JSON.parse(window.OCStore.get(delCopiesKey()) || '{}');
     state._deletedCopies = (copies && typeof copies === 'object' && !Array.isArray(copies)) ? copies : {};
   } catch (e) { state._deletedCopies = {}; }
   try {
@@ -609,7 +615,7 @@ function persistDeletedCopies() {
   try {
     const entries = Object.entries(state._deletedCopies || {}).slice(-20);
     state._deletedCopies = Object.fromEntries(entries);
-    localStorage.setItem('oc_chat_delcopies_' + state.user.id, JSON.stringify(state._deletedCopies));
+    window.OCStore.set(delCopiesKey(), JSON.stringify(state._deletedCopies));
   } catch (e) { /* 存储已满等场景忽略,删除仍会随列表同步生效 */ }
 }
 function persistServerTombs() {
@@ -690,12 +696,11 @@ function scheduleStreamSave() {
 }
 function saveChats() {
   if (!state.user || state.applyingCloudChats) return;
-  const key = 'oc_chats_' + state.user.id;
-  try {
-    localStorage.setItem(key, JSON.stringify(state.chats));
-  } catch (e) {
-    try { localStorage.setItem(key, JSON.stringify(slimChatsForStore(state.chats))); }
-    catch (e2) { console.warn('保存对话失败', e2); }
+  const key = chatsKey();
+  // 返回 false = 这一次连兜底存储都没写进去(浏览器不给 IndexedDB、localStorage 又满),
+  // 此时退一份瘦身副本(附件本体与超长字段不落本地),云端仍是权威副本
+  if (!window.OCStore.set(key, JSON.stringify(state.chats))) {
+    window.OCStore.set(key, JSON.stringify(slimChatsForStore(state.chats)));
   }
   scheduleCloudSync();
 }
@@ -839,7 +844,7 @@ function applyCloudChats(chats, revision) {
     const prevStamp = chatViewStamp(prev);
     state.chats = window.OCConversations.normalize(chats || []);
     state.chatRevision = Number(revision) || 0;
-    localStorage.setItem('oc_chats_' + state.user.id, JSON.stringify(state.chats));
+    window.OCStore.set(chatsKey(), JSON.stringify(state.chats));
     localStorage.setItem('oc_chat_rev_' + state.user.id, String(state.chatRevision));
     state.currentChatId = state.chats.some((c) => c.id === state.currentChatId) ? state.currentChatId : null;
     // 当前对话被整体还原清掉时,落到列表第一条,避免停在空白页
@@ -895,7 +900,7 @@ async function pullChatsFromCloud() {
       const merged = mergeChatLists(data.chats || [], state.chats || []);
       state.chats = merged;
       state.chatRevision = revision;
-      localStorage.setItem('oc_chats_' + state.user.id, JSON.stringify(merged));
+      window.OCStore.set(chatsKey(), JSON.stringify(merged));
       localStorage.setItem('oc_chat_rev_' + state.user.id, String(revision));
       renderChatList();
       if (!state.currentChatId && merged.length) state.currentChatId = merged[0].id;
@@ -1016,6 +1021,9 @@ function renderChatList() {
   if (!window.OCConversations || !list) { renderChatListSimple(list); return; }
   window.OCConversations.renderList(list, visibleChats(), {
     currentId: state.currentChatId,
+    // 开放 API 调用产生的会话要在每个时间段里单独成组(「今天 API」紧跟「今天」)。
+    // 判定口径与「显示 API 对话」开关共用同一处,免得两处各写一份、日后漂移。
+    isApiChat,
     onSelect: (c) => {
       if (state.streaming) { stopStreaming(); }
       state.currentChatId = c.id;
@@ -2175,6 +2183,8 @@ function providerNameOf(providerId) {
 function modelDisplayName(model) {
   const provider = state.providers.find((x) => x.id === state.currentProviderId);
   const name = model && (model.name || model.id);
+  // 汇总项不自带「供应商@」前缀(它的名字本身就是前台展示名)
+  if (provider && provider.agg) return name || '';
   return provider && name ? provider.name + '@' + name : (name || '');
 }
 // 按「供应商 + 模型」在模型切换列表里找同一项。
@@ -2282,8 +2292,12 @@ function availableModelItems() {
         : '';
       const item = {
         value: provider.id + '\n' + id, providerId: provider.id, modelId: id,
-        label: provider.name + '@' + name, providerName: provider.name || '', search: provider.name + ' ' + id + ' ' + name,
+        // 汇总项(多个渠道聚合成一个 ID)只显示模型名:前台看上去和一个普通模型
+        // 完全一样,不再拼成「汇总名@汇总名」这种重复的标签。
+        label: provider.agg ? name : (provider.name + '@' + name),
+        providerName: provider.name || '', search: provider.name + ' ' + id + ' ' + name,
         health: health.state, healthTitle: health.title, icon: logo, isImage, isVideo,
+        agg: !!provider.agg, aggStrategy: provider.aggStrategy || '', aggCount: Number(provider.aggCount) || 0,
       };
       (isVideo ? video : (isImage ? image : chat)).push(item);
     });
@@ -4685,7 +4699,7 @@ function allImageModels() {
     (p.models || []).forEach((m) => {
       if (!m || !m.id) return;
       if (!modelIsImage(m.id)) return;
-      out.push({ providerId: p.id, modelId: String(m.id), value: p.id + '\n' + m.id, label: (p.name || p.id) + '@' + (m.name || m.id) });
+      out.push({ providerId: p.id, modelId: String(m.id), value: p.id + '\n' + m.id, label: p.agg ? (m.name || m.id) : ((p.name || p.id) + '@' + (m.name || m.id)) });
     });
   });
   return out;
@@ -4966,6 +4980,10 @@ async function saveToolSource(patch) {
       if (window.OCUI && window.OCUI.setPref) window.OCUI.setPref(key, el.checked);
       else localStorage.setItem('oc_pref_' + key, el.checked ? '1' : '0');
       if (key === 'stream') state.streamToggle = el.checked;
+      // 「显示 API 对话」关掉后列表要当场少掉那些会话(以及它们的「今天 API」分组)。
+      // 这个开关只改了偏好,没有任何后续动作会重绘侧栏 —— 不在这里重绘,用户会看到
+      // 开关明明关了、列表却原样不动,直到某次刷新才生效。
+      if (key === 'showApiChats') renderChatList();
       if (key === 'reasoning') {
         syncPrefsPanel();
         syncComposerEffort();
@@ -5763,7 +5781,7 @@ async function saveToolSource(patch) {
       state._deletedCopies = {};
       persistTombstones();
       persistDeletedCopies();
-      localStorage.setItem('oc_chats_' + state.user.id, '[]');
+      window.OCStore.set(chatsKey(), '[]');
       localStorage.setItem('oc_chat_rev_' + state.user.id, String(state.chatRevision));
       renderChatList();
       renderMessages();
@@ -5784,6 +5802,8 @@ function renderProviderList() {
   const list = $('provider-list');
   list.innerHTML = '';
   state.providers.forEach((p) => {
+    // 汇总 ID 是「模型」而不是供应商:它出现在模型选择器里,但不属于用户的供应商管理列表
+    if (p.agg) return;
     const card = document.createElement('div');
     card.className = 'provider-card';
     const isOwner = p.mine || p.ownerId === state.user.id;
@@ -8973,6 +8993,10 @@ function enterReadonlyHome() {
       try { await window.OCSettingsSync.init(state.user); } catch (e) { /* 本地设置兜底 */ }
     }
     renderUser();
+    // 会话正文在本地库(IndexedDB)里,读之前先把库打开、镜像灌满,并把上个版本留在
+    // localStorage 里的旧副本迁进来。这一步失败不拦着用:OCStore 会退回 localStorage,
+    // 读到的仍是同一份数据(只是又受那 5MB 限制)。
+    if (window.OCStore) { try { await window.OCStore.ready([chatsKey(), delCopiesKey()]); } catch (e) { /* 兜底存储 */ } }
     loadChats();
     renderChatList();
     state._scrollHistoryToBottom = true;

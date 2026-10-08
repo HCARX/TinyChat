@@ -6,7 +6,7 @@ if (!defined('TC_ROOT')) {
     define('TC_ROOT', dirname(__DIR__));
 }
 
-define('TC_VERSION', '2.0.149');
+define('TC_VERSION', '2.0.153');
 // 单篇笔记正文上限(字符)。超出时接口明确报错而不是静默截断。
 define('TC_NOTE_MAX_CHARS', 500000);
 // 敏感词库上限(去重后的条数)。达到上限后新增词条被丢弃,单个词条本身不截断。
@@ -187,6 +187,11 @@ $TC_SETTINGS_DEFAULTS = array(
     'maxContextMessages' => 200,
     // 说明:单次输出上限与上下文窗口不再有全局设置,统一由「模型元数据」表按模型名控制
     // (见 $TC_MODEL_META_AUTO_* 常量与该表的 ensure/取数逻辑)。
+    // 模型汇总(见 tc_model_groups_*):总开关默认关闭,关闭时前台/开放接口与从前完全一致。
+    // 开启后默认把「同名模型」汇总成一个 ID,且被汇总的原始模型不再单独出现。
+    'modelAggEnabled' => false,
+    'modelAggAutoMerge' => true,
+    'modelAggHideUnmerged' => false,
     // 全局采样温度: null = 不发送该参数(用模型默认);设置后 0-2
     'temperature' => null,
     // 数据备份:每日自动备份整库快照到 data/backup/,保留最近 N 份
@@ -1028,6 +1033,271 @@ function tc_model_meta_seed_builtin(&$db) {
     return $n;
 }
 
+// ---- 模型汇总:把多个渠道的模型聚合成一个前台可见的自定义 ID ----
+// 与「模型元数据」并列存为独立的 $db 顶层键 modelGroups(顺序数组,顺序即前台显示顺序),
+// 不塞进 settings:条目数量大、且要能被 settings 之外的写路径(渠道保存时补同名组)补写。
+//   auto 组(matchId):成员动态计算 = 所有「启用且对该用户可见的渠道」里含该模型名的模型。
+//     渠道新增/改名后无需重新生成,天然保持最新 —— 这就是「默认开启后汇总同名模型」。
+//   manual 组(members):成员是显式列表,可以把不同模型名、不同渠道的模型自由组合。
+// 两类都可各自设置轮询或故障转移、前台显示顺序、显示名、单次扣费(留空则按成员折算),可单独停用。
+// 总开关 modelAggEnabled 默认关闭:关闭时全站行为与没有这个功能时逐字节一致。
+define('TC_MODEL_GROUP_MAX', 200);
+define('TC_MODEL_GROUP_MEMBERS_MAX', 50);
+
+// 汇总 ID 清洗:去首尾空白与控制字符,截断 100 字。匹配不区分大小写(见 tc_model_group_key)。
+function tc_model_group_clean_id($id) {
+    $id = trim((string) $id);
+    $id = preg_replace('/[\x00-\x1f\x7f]+/u', '', $id);
+    if (!is_string($id) || $id === '') return '';
+    return substr($id, 0, 100);
+}
+
+// 汇总 ID 的匹配键(小写):用于判断「请求里的 model 命中哪个汇总组」以及建组去重。
+// 与 tc_model_meta_key 同一口径 —— 自动汇总组的 ID 就是模型名,两张表的名字对得上。
+function tc_model_group_key($id) {
+    return strtolower(tc_model_group_clean_id($id));
+}
+
+function tc_normalize_model_group($raw) {
+    if (!is_array($raw)) return null;
+    $id = tc_model_group_clean_id(isset($raw['id']) ? $raw['id'] : '');
+    if ($id === '') return null;
+    $auto = !empty($raw['auto']);
+    $members = array();
+    if (!$auto) {
+        $seen = array();
+        foreach ((isset($raw['members']) && is_array($raw['members']) ? $raw['members'] : array()) as $m) {
+            if (!is_array($m)) continue;
+            $pid = substr(trim((string) (isset($m['providerId']) ? $m['providerId'] : '')), 0, 64);
+            $mid = substr(trim((string) (isset($m['model']) ? $m['model'] : '')), 0, 200);
+            if ($pid === '' || $mid === '') continue;
+            $k = $pid . "\n" . $mid;
+            if (isset($seen[$k])) continue;
+            $seen[$k] = true;
+            $members[] = array('providerId' => $pid, 'model' => $mid);
+            if (count($members) >= TC_MODEL_GROUP_MEMBERS_MAX) break;
+        }
+    }
+    $strategy = (string) (isset($raw['strategy']) ? $raw['strategy'] : '') === 'roundrobin' ? 'roundrobin' : 'failover';
+    // 单次扣费:留空 = 按实际命中的成员折算(见 tc_api_proxy 的预扣逻辑)
+    $cost = null;
+    if (isset($raw['cost']) && $raw['cost'] !== '' && $raw['cost'] !== null && is_numeric($raw['cost'])) {
+        $cost = min(1000, max(0, (float) $raw['cost']));
+    }
+    return array(
+        'id' => $id,
+        'label' => substr(trim((string) (isset($raw['label']) ? $raw['label'] : '')), 0, 60),
+        'enabled' => !array_key_exists('enabled', $raw) || !empty($raw['enabled']),
+        'order' => max(0, (int) (isset($raw['order']) ? $raw['order'] : 0)),
+        'strategy' => $strategy,
+        'auto' => $auto,
+        // auto 组按此名在可见渠道里精确匹配成员模型;留空时退回组 ID
+        'matchId' => $auto ? substr(trim((string) (isset($raw['matchId']) && $raw['matchId'] !== '' ? $raw['matchId'] : $id)), 0, 200) : '',
+        'members' => $members,
+        // 归到前台哪个分组(对话/生图/生视频),与供应商模型项上的 image/video 标记同一语义
+        'image' => !empty($raw['image']),
+        'video' => !empty($raw['video']),
+        'cost' => $cost,
+        'updatedAt' => isset($raw['updatedAt']) && is_numeric($raw['updatedAt']) ? (int) $raw['updatedAt'] : tc_now(),
+    );
+}
+
+function tc_normalize_model_groups($raw) {
+    $out = array();
+    $seen = array();
+    foreach ((array) $raw as $g) {
+        $norm = tc_normalize_model_group($g);
+        if ($norm === null) continue;
+        $k = tc_model_group_key($norm['id']);
+        if ($k === '' || isset($seen[$k])) continue;
+        $seen[$k] = true;
+        $out[] = $norm;
+        if (count($out) >= TC_MODEL_GROUP_MAX) break;
+    }
+    return $out;
+}
+
+// 汇总总开关。关闭时列表注入/请求展开/开放接口一律不生效。
+function tc_model_groups_on($db) {
+    return !empty($db['settings']['modelAggEnabled']);
+}
+
+// 按 ID 找汇总组;$onlyEnabled=true 时跳过已停用的组
+function tc_model_group_find($db, $id, $onlyEnabled = true) {
+    $key = tc_model_group_key($id);
+    if ($key === '') return null;
+    foreach ((isset($db['modelGroups']) && is_array($db['modelGroups']) ? $db['modelGroups'] : array()) as $g) {
+        if (!is_array($g) || !isset($g['id'])) continue;
+        if (tc_model_group_key($g['id']) !== $key) continue;
+        if ($onlyEnabled && empty($g['enabled'])) return null;
+        return $g;
+    }
+    return null;
+}
+
+// 全部启用中的汇总组,按前台显示顺序排列。order 与供应商 order 同一序列,
+// 因此「调整汇总 ID 与供应商的先后」是同一件事;order 相同时按存储顺序稳定排列。
+function tc_model_groups_ordered($db) {
+    $list = array();
+    foreach ((isset($db['modelGroups']) && is_array($db['modelGroups']) ? $db['modelGroups'] : array()) as $i => $g) {
+        if (!is_array($g) || !isset($g['id']) || empty($g['enabled'])) continue;
+        $list[] = array('i' => $i, 'g' => $g);
+    }
+    usort($list, function ($a, $b) {
+        $oa = (int) (isset($a['g']['order']) ? $a['g']['order'] : 0);
+        $ob = (int) (isset($b['g']['order']) ? $b['g']['order'] : 0);
+        if ($oa === $ob) return $a['i'] - $b['i'];
+        return $oa < $ob ? -1 : 1;
+    });
+    $out = array();
+    foreach ($list as $x) $out[] = $x['g'];
+    return $out;
+}
+
+// 下一批可用的 order(新建汇总组排到末尾)。与供应商共用一套序号,
+// 新组默认排在所有现有供应商之后,不会因为插进中间而打乱既有前台顺序。
+function tc_next_model_group_order($db) {
+    $max = -1;
+    foreach ((isset($db['modelGroups']) && is_array($db['modelGroups']) ? $db['modelGroups'] : array()) as $g) {
+        $o = (int) (isset($g['order']) ? $g['order'] : 0);
+        if ($o > $max) $max = $o;
+    }
+    foreach ((isset($db['providers']) ? $db['providers'] : array()) as $p) {
+        if (!is_array($p) || !isset($p['order']) || !is_numeric($p['order'])) continue;
+        $o = (int) $p['order'];
+        if ($o > $max) $max = $o;
+    }
+    return $max + 1;
+}
+
+// 轮询游标:进程间共享的文件计数(照 tc_rate_limit_file 的 flock 写法)。
+// 不能用数据库存 —— 模型解析发生在 tc_with_db 的读事务里,而 tc_with_db 不可嵌套,
+// 读事务里拿不到写锁。计数文件不可写时退化为 0(等价于固定用首选渠道,不影响可用性)。
+function tc_model_group_rr_file($id) {
+    $dir = tc_data_dir() . '/modelrr';
+    if (!is_dir($dir)) @mkdir($dir, 0755, true);
+    return $dir . '/' . hash('sha256', tc_model_group_key($id)) . '.json';
+}
+
+// 取本次该用的起点下标(0..$count-1),并原子推进游标。
+function tc_model_group_rr_next($id, $count) {
+    $count = (int) $count;
+    if ($count <= 1) return 0;
+    $fp = @fopen(tc_model_group_rr_file($id), 'c+');
+    if (!$fp) return 0;
+    $n = 0;
+    if (@flock($fp, LOCK_EX)) {
+        $data = json_decode((string) stream_get_contents($fp), true);
+        $n = is_array($data) && isset($data['n']) ? (int) $data['n'] : 0;
+        ftruncate($fp, 0);
+        rewind($fp);
+        fwrite($fp, tc_json_encode(array('n' => ($n + 1) % 1000000000)));
+        fflush($fp);
+        flock($fp, LOCK_UN);
+    }
+    fclose($fp);
+    return $n % $count;
+}
+
+// 取供应商下某模型条目(找不到返回 null)
+function tc_model_entry($provider, $modelId) {
+    $mid = (string) $modelId;
+    if ($mid === '' || !isset($provider['models']) || !is_array($provider['models'])) return null;
+    foreach ($provider['models'] as $m) {
+        if (is_array($m) && isset($m['id']) && (string) $m['id'] === $mid) return $m;
+    }
+    return null;
+}
+
+// 汇总组归到前台的哪个分组(对话/生图/生视频),返回 array($isImage, $isVideo)。
+// 管理员在组上的显式标记优先;没标时看成员模型条目上的 image/video 标记,
+// 再退回名称启发式 —— 与单条模型在前台的归类规则保持一致,避免汇总后归错组。
+function tc_model_group_media_kind($group, $candidates) {
+    $image = !empty($group['image']);
+    $video = !empty($group['video']);
+    if (!$image && !$video) {
+        foreach ((array) $candidates as $c) {
+            if (!is_array($c)) continue;
+            $entry = tc_model_entry(isset($c['provider']) ? $c['provider'] : array(), isset($c['model']) ? $c['model'] : '');
+            if ($entry === null) continue;
+            if (!empty($entry['video'])) { $video = true; break; }
+            if (!empty($entry['image'])) { $image = true; break; }
+        }
+    }
+    if (!$image && !$video) {
+        $match = (string) (isset($group['matchId']) && $group['matchId'] !== '' ? $group['matchId'] : (isset($group['id']) ? $group['id'] : ''));
+        if ($match !== '') {
+            if (function_exists('tc_video_model_name_hint') && tc_video_model_name_hint($match)) $video = true;
+            elseif (tc_image_model_name_hint($match)) $image = true;
+        }
+    }
+    if ($video) $image = false;
+    return array($image, $video);
+}
+
+// 按当前渠道配置补/删「同名自动汇总组」:
+//   1) 同一个模型名出现在 ≥2 个渠道 → 建一条 auto 组(id 就是模型名本身,对现有 API 客户端零改动);
+//   2) 已经没有重复的 auto 组 → 删掉(手工组一律不动);
+//   3) 已存在的 auto 组只补 matchId,不动管理员改过的策略/顺序/显示名/扣费。
+// 返回 array(added, removed, kept)。可重复调用。
+function tc_model_groups_sync_auto(&$db, $minProviders = 2) {
+    if (!isset($db['modelGroups']) || !is_array($db['modelGroups'])) $db['modelGroups'] = array();
+    // 统计每个模型名出现在多少个「启用中的」渠道。停用渠道前台根本看不到,
+    // 把它算进去会造出「一个可用成员都没有」的汇总组(前台不显示,却白占一个名额),
+    // 也会让名称只剩一个渠道可用时仍不清理。
+    $owners = array();
+    $display = array();
+    foreach ((isset($db['providers']) ? $db['providers'] : array()) as $p) {
+        if (!is_array($p) || !isset($p['id'])) continue;
+        // 只统计启用中的渠道。core.php 不依赖 api.php 的 tc_provider_enabled,这里内联同一判定。
+        if (isset($p['enabled']) && empty($p['enabled'])) continue;
+        foreach ((isset($p['models']) ? $p['models'] : array()) as $m) {
+            if (!is_array($m) || !isset($m['id'])) continue;
+            $name = trim((string) $m['id']);
+            if ($name === '') continue;
+            $key = tc_model_group_key($name);
+            if ($key === '') continue;
+            $owners[$key][(string) $p['id']] = true;
+            if (!isset($display[$key])) $display[$key] = $name;
+        }
+    }
+    $keep = array();
+    $removed = 0;
+    foreach ($db['modelGroups'] as $g) {
+        if (!is_array($g)) continue;
+        if (empty($g['auto'])) { $keep[] = $g; continue; }
+        $key = tc_model_group_key(isset($g['matchId']) && $g['matchId'] !== '' ? $g['matchId'] : $g['id']);
+        if ($key === '' || count(isset($owners[$key]) ? $owners[$key] : array()) < max(1, (int) $minProviders)) { $removed++; continue; }
+        $keep[] = $g;
+    }
+    $db['modelGroups'] = $keep;
+    // 建缺失的 auto 组
+    $existing = array();
+    foreach ($db['modelGroups'] as $g) {
+        if (is_array($g) && isset($g['id'])) $existing[tc_model_group_key($g['id'])] = true;
+    }
+    $added = 0;
+    foreach ($owners as $key => $set) {
+        if (count($set) < max(1, (int) $minProviders)) continue;
+        if (isset($existing[$key])) continue;
+        if (count($db['modelGroups']) >= TC_MODEL_GROUP_MAX) break;
+        $name = isset($display[$key]) ? $display[$key] : $key;
+        $db['modelGroups'][] = tc_normalize_model_group(array(
+            'id' => $name,
+            'label' => $name,
+            'auto' => true,
+            'matchId' => $name,
+            'strategy' => 'failover',
+            'order' => tc_next_model_group_order($db),
+            'enabled' => true,
+            'updatedAt' => tc_now(),
+        ));
+        $added++;
+    }
+    $db['modelGroups'] = tc_normalize_model_groups($db['modelGroups']);
+    return array('added' => $added, 'removed' => $removed, 'kept' => count($db['modelGroups']));
+}
+
 // 域名白名单文本的解析/清洗放在 core.php:tc_normalize_settings 要用它,而 core.php 在
 // 「只加载 core+api」的上下文(自检脚本)里也会被调用,不能依赖 web.php。匹配逻辑
 // (后缀放行、开关判定)在 web.php,这里只管「文本 -> 规范化文本」这一段。
@@ -1179,6 +1449,10 @@ function tc_normalize_settings($raw) {
     $s['contextMessages'] = min($s['maxContextMessages'], max(2, $ctx ?: $TC_SETTINGS_DEFAULTS['contextMessages']));
     $temp = isset($s['temperature']) && $s['temperature'] !== '' && $s['temperature'] !== null ? (float) $s['temperature'] : null;
     $s['temperature'] = $temp === null ? null : min(2, max(0, $temp));
+    // 模型汇总:总开关默认关闭;开启后默认汇总同名模型,且被汇总的原始模型不再单独出现
+    $s['modelAggEnabled'] = !empty($s['modelAggEnabled']);
+    $s['modelAggAutoMerge'] = !array_key_exists('modelAggAutoMerge', $s) || !empty($s['modelAggAutoMerge']);
+    $s['modelAggHideUnmerged'] = !empty($s['modelAggHideUnmerged']);
     $s['backupEnabled'] = !array_key_exists('backupEnabled', $s) || !empty($s['backupEnabled']);
     $s['backupKeep'] = min(30, max(1, (int) (isset($s['backupKeep']) ? $s['backupKeep'] : 7) ?: 7));
     $s['rateLimitPerMin'] = min(600, max(0, (int) (isset($s['rateLimitPerMin']) ? $s['rateLimitPerMin'] : 30)));
@@ -1553,6 +1827,9 @@ function tc_empty_db() {
         // 后台可手工维护,也可从 litellm 的 model_prices_and_context_window.json 同步。
         // 同一模型在多个供应商下复用时只需维护一份;source=manual 的条目不会被同步覆盖。
         'modelMeta' => new stdClass(),
+        // 模型汇总(自定义 ID 聚合多模型):顺序数组,顺序即前台显示顺序。
+        // auto 组成员动态计算(所有含该模型名的可见渠道),manual 组按显式成员列表。
+        'modelGroups' => array(),
         // 演示模式快照:演示管理员改动前的站点状态,到期后由 tc_demo_revert 还原
         'demoSnapshot' => null,
         // 演示还原标记:{userId: 时间戳},客户端据此整体采纳云端(见 tc_demo_revert)
@@ -1578,7 +1855,7 @@ function tc_is_demo_user($u) {
 
 // 快照覆盖范围:演示管理员能改动的站点内容。settings 含公告/限流/思考等全部设置。
 function tc_demo_snapshot_fields() {
-    return array('settings', 'accessRules', 'providers', 'packages', 'assistants', 'defaultProviderId');
+    return array('settings', 'accessRules', 'providers', 'packages', 'assistants', 'defaultProviderId', 'modelGroups');
 }
 
 // 拍一张演示快照(改动前的状态),并按设置的有效期计时。
@@ -1984,7 +2261,10 @@ function tc_migrate_toolbox_defaults(&$db) {
     $old = array();
     $new = array();
     foreach (tc_toolbox_default_system_v1()['items'] as $it) $old[$it['id']] = $it['html'];
-    foreach (tc_toolbox_default_system()['items'] as $it) $new[$it['id']] = $it['html'];
+    // 目标必须钉在「这一代」的冻结工厂上,不能写 tc_toolbox_default_system()(它是活的,会跟着
+    // 当前版本跑)。否则老库一步就被填成最新版,紧接着的 v3 顺移再也认不出「出厂原文」,
+    // 新版独有的工具与分类就补不进来了 —— 表现为升级后少了二维码/JWT 两套。
+    foreach (tc_toolbox_default_system_v2()['items'] as $it) $new[$it['id']] = $it['html'];
     $hit = 0;
     foreach ($cur['items'] as $i => $it) {
         $id = isset($it['id']) ? (string) $it['id'] : '';
@@ -1992,6 +2272,59 @@ function tc_migrate_toolbox_defaults(&$db) {
         if (!isset($it['html']) || (string) $it['html'] !== $old[$id]) continue;   // 不是原文就不碰
         $cur['items'][$i]['html'] = $new[$id];
         $hit++;
+    }
+    if ($hit) $db['sysToolbox'] = $cur;
+}
+
+// 内置工具换新(第三版):出厂内容整套重写 —— 视觉换成站内设计系统(无描边圆角控件、浅深两套
+// 色板),工具本身也逐套重做,并新增二维码、JWT 等。存量库里的还是上一版(2.0.147-2.0.151)
+// 或更早(2.0.145)的原文,种子标记已置位不会重种,所以在这里顺移一次。
+//
+// 判据同上一版:拿两代冻结原文逐字节比,只有「还是出厂原文」的那几套才换;管理员改过的
+// 一个字都不动。新版才有的工具(二维码等)直接补进去,但只补「历史上从未出厂过的 id」——
+// 出厂过而被管理员删掉的,尊重那次删除,不因为迁移又长回来(与种子的删除语义一致)。
+function tc_migrate_toolbox_defaults_v3(&$db) {
+    if (!empty($db['toolboxDefaultsV3Merged'])) return;
+    $db['toolboxDefaultsV3Merged'] = true;
+    $GLOBALS['_tc_db_seed_dirty'] = true;   // 标记本身也要落库,否则每次请求都要重算一遍
+    $cur = isset($db['sysToolbox']) ? $db['sysToolbox'] : null;
+    if (!is_array($cur) || !isset($cur['items']) || !is_array($cur['items'])) return;
+    require_once __DIR__ . '/toolbox-default.php';
+    $old = array();   // id => 该套工具历史出厂过的所有整页原文
+    foreach (array(tc_toolbox_default_system_v1(), tc_toolbox_default_system_v2()) as $doc) {
+        foreach ($doc['items'] as $it) $old[$it['id']][] = $it['html'];
+    }
+    $sys = tc_toolbox_default_system();
+    $new = array();
+    foreach ($sys['items'] as $it) $new[$it['id']] = $it;
+
+    $hit = 0;
+    $seen = array();
+    foreach ($cur['items'] as $i => $it) {
+        $id = isset($it['id']) ? (string) $it['id'] : '';
+        if ($id === '') continue;
+        $seen[$id] = true;
+        if (!isset($old[$id]) || !isset($new[$id])) continue;                     // 管理员自建的,不碰
+        if (!isset($it['html']) || !in_array((string) $it['html'], $old[$id], true)) continue;   // 改过的,不碰
+        $cur['items'][$i] = $new[$id];
+        $hit++;
+    }
+    // 只有确认这个库还在用出厂内容(至少替换成功了一套)时才补新版独有的工具与分类。
+    // 判据是「有东西被换」而不是「有东西在」:管理员把工具箱清空、或整套都换成自己的,
+    // 都是在表达「这里由我作主」,迁移不该往里塞东西 —— 否则清空过的库会在升级后又长出工具。
+    if ($hit > 0) {
+        foreach ($new as $id => $it) {
+            if (isset($seen[$id]) || isset($old[$id])) continue;
+            $cur['items'][] = $it;
+            $hit++;
+        }
+        $cats = isset($cur['cats']) && is_array($cur['cats']) ? $cur['cats'] : array();
+        $have = array();
+        foreach ($cats as $c) if (isset($c['id'])) $have[(string) $c['id']] = true;
+        foreach ($sys['cats'] as $c) {
+            if (!isset($have[$c['id']])) $cats[] = $c;
+        }
+        $cur['cats'] = array_values($cats);
     }
     if ($hit) $db['sysToolbox'] = $cur;
 }
@@ -2090,6 +2423,9 @@ function tc_migrate_db($raw) {
     // 内置工具换新(第二版):出厂那几套里的原生下拉换成页内自绘控件。存量库里的还是
     // 2.0.145 的原文,种子标记已置位不会重种,所以得在这里单独顺移一次(改过的不动)。
     tc_migrate_toolbox_defaults($db);
+    // 内置工具换新(第三版):整套重写 + 新增二维码/JWT。存量库里还是前两版的原文,
+    // 这里按「与冻结原文逐字节相同」替换,改过的不动。
+    tc_migrate_toolbox_defaults_v3($db);
     $db['version'] = TC_DB_VERSION;
     foreach (array('users', 'providers', 'userGroups', 'accessRules', 'assistantCategories', 'assistants', 'packages', 'redemptionCodes', 'quotaLedger', 'inviteCodes') as $k) {
         $db[$k] = isset($db[$k]) && is_array($db[$k]) ? array_values($db[$k]) : array();
@@ -2138,6 +2474,7 @@ function tc_migrate_db($raw) {
     );
     $db['settings'] = tc_normalize_settings(isset($db['settings']) ? $db['settings'] : null);
     $db['modelMeta'] = tc_normalize_model_meta(isset($db['modelMeta']) ? $db['modelMeta'] : array());
+    $db['modelGroups'] = tc_normalize_model_groups(isset($db['modelGroups']) ? $db['modelGroups'] : array());
     unset($db['sessions']);
     foreach ($db['users'] as &$u) {
         if (!isset($u['tv']) || !is_numeric($u['tv'])) $u['tv'] = 0;

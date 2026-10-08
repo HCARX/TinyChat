@@ -88,6 +88,10 @@ jobs:
         run: php tests/settings-sync.php
       - name: 内置模型元数据自检(注入 / 不覆盖手工与同步 / 同步跳过内置)
         run: php tests/model-meta-builtin.php
+      - name: 模型汇总自检(同名自动生成与清理 / 候选按可见性与授权过滤 / 轮询游标 / 请求解析展开 / 白名单)
+        # 这几段写错了都不报错:多过滤一步是「用户明明能用却被告知没有可用渠道」,
+        # 少过滤一步是越权用到未授权的渠道;总开关关闭时多做了事则等于没关掉。
+        run: php tests/model-groups.php
       - name: 演示管理员还原自检(拍摄/到期还原/反复还原)
         run: php tests/demo-revert.php
       - name: 生图响应解析自检(各平台返回形态)
@@ -98,6 +102,11 @@ jobs:
         run: php tests/upstream-url.php
       - name: 署名完整性守卫自检(篡改拦截 / 合法放行)
         run: php tests/attribution.php
+      - name: 本地存储契约自检(大块键不得直接走 localStorage / 读前先开库 / 迁移顺序)
+        # 会话与笔记这几处少改一个调用点,那一处就继续受 localStorage 那 5MB 限制 ——
+        # 功能照常、界面照常,只有用户的图存不住。这类「读代码看不出来」的差异钉成契约;
+        # 真行为由 tests/local-store-gui.mjs 在真浏览器里量。
+        run: node tests/local-store.js
       - name: 生图图片代理自检(签名 / SSRF 防护 / 媒体类型收紧 / 协议白名单)
         run: php tests/image-proxy.php
       - name: 对话式生图/改图自检(抽图 / 参考图 / 兜底识别)
@@ -139,6 +148,11 @@ jobs:
           coverage: none
       - name: 运行 E2E 套件
         run: bash tests/e2e.sh
+      # 模型汇总的故障转移/轮询只在真实运行期成立:单元自检只覆盖「选哪些候选」的静态规则,
+      # 「第一个渠道打不通时请求真的落到下一个、轮询真的两边轮」必须起真服务 + 多个 mock 上游
+      # 才验得出来(mock 用 TC_MOCK_TAG 区分应答,断言据此判断回复来自哪个渠道)。
+      - name: 模型汇总 E2E(同名自动汇总 / 自定义汇总 ID / 跨渠道故障转移 / 轮询)
+        run: bash tests/model-groups-e2e.sh
 
   gui:
     name: AI 整理弹窗(GUI)
@@ -228,3 +242,26 @@ jobs:
       # 一遍才有结论;顺带守住落库往返、墓碑、删除后 404、开关隐藏入口与窄屏。
       - name: 在线工具箱 GUI 自检(不透明源 / 新标签页端点 / 落库往返 / 窄屏)
         run: node tests/toolbox-gui.mjs
+      # 上面那份管「工具箱这个功能」,这份管「装进去的那 12 套工具自己能不能用」。
+      # 工具是纯前端页面,控件接线与算得对不对只有真引擎才有结论:事件名写错、公式算偏,
+      # 静态检查(php -l / nowdoc 语法 / 禁用 storage)全都拦不住。二维码另走生成 → 识别
+      # 闭环,并涂掉一块数据模块验纠错;深色主题再各走一遍防白底白字。
+      - name: 内置工具逐套 GUI 自检(12 套联动 / 二维码往返与纠错 / 深色主题)
+        run: node tests/toolbox-tools-gui.mjs
+      # 「汇总后前台看上去就和只加了一个供应商的一个模型一样」这句承诺不是接口字段能保证的,
+      # 而是后台面板画得出来 + 前台选择器最终显示成什么样。接口全对、列表里却仍是两条重复项,
+      # 读代码看不出来 —— 只能真浏览器量 DOM(含「关掉开关后恢复成渠道@模型两条」)。
+      - name: 模型汇总 GUI 自检(面板渲染 / 前台只剩一条 / 弹窗新增 / 停用删除 / 开关往返)
+        run: node tests/model-groups-gui.mjs
+      # 「API 对话单独成组、今天 API 紧跟今天」是纯渲染结果:接口字段全对,顺序或归属
+      # 照样可能画错。用例走的是最真的路径(真调一次 /v1 生成接口会话),顺带守住
+      # 「客户端把列表推回云端后标记不丢」—— 那个缺陷本机看不出来,换设备才炸。
+      - name: API 对话分组 GUI 自检(顺序 / 归属 / 独立折叠 / 同步往返后不退化)
+        run: node tests/chat-api-group-gui.mjs
+      # localStorage 每源只有约 5MB,而会话里带着图片本体(一张 3MB 的图在本地就是 800 万字符:
+      # content 内联一份、attachments 再存一份)。「写不下」只能在真浏览器里量:先二分出单键
+      # 上限,再拿一份超过它的会话走一遍「写 → 拦截云同步重载读回」。
+      # 顺带验旧键迁移(全新用户资料 + 只放 localStorage 的旧副本)与「浏览器不给用 IndexedDB
+      # 时退回 localStorage」这条兜底 —— 后者决定了换存储会不会把页面弄坏。
+      - name: 本地存储 GUI 自检(超 5MB 载荷往返 / 旧键迁移 / IDB 不可用兜底 / 笔记)
+        run: node tests/local-store-gui.mjs

@@ -9,16 +9,16 @@
 <meta name="robots" content="noindex,nofollow">
 <link rel="icon" type="image/svg+xml" href="./logo-icon.svg">
 <link rel="apple-touch-icon" href="./static/logo/app-icon-192.png">
-<link rel="stylesheet" href="./static/css/style.min.css?v=2.0.149">
-<link rel="stylesheet" href="./vendor/highlight/github.min.css?v=2.0.149" id="hljs-theme">
-<link rel="stylesheet" href="./vendor/katex/katex.min.css?v=2.0.149">
-<link rel="stylesheet" href="./static/css/enhanced.min.css?v=2.0.149">
-<link rel="stylesheet" href="./static/css/refine.min.css?v=2.0.149">
-<link rel="stylesheet" href="./static/css/redesign.min.css?v=2.0.149">
-<link rel="stylesheet" href="./static/css/polish.min.css?v=2.0.149">
-<link rel="stylesheet" href="./static/css/markdown.min.css?v=2.0.149">
-<link rel="stylesheet" href="./static/css/chrome.min.css?v=2.0.149">
-<script src="./static/js/theme-boot.min.js?v=2.0.149"></script>
+<link rel="stylesheet" href="./static/css/style.min.css?v=2.0.153">
+<link rel="stylesheet" href="./vendor/highlight/github.min.css?v=2.0.153" id="hljs-theme">
+<link rel="stylesheet" href="./vendor/katex/katex.min.css?v=2.0.153">
+<link rel="stylesheet" href="./static/css/enhanced.min.css?v=2.0.153">
+<link rel="stylesheet" href="./static/css/refine.min.css?v=2.0.153">
+<link rel="stylesheet" href="./static/css/redesign.min.css?v=2.0.153">
+<link rel="stylesheet" href="./static/css/polish.min.css?v=2.0.153">
+<link rel="stylesheet" href="./static/css/markdown.min.css?v=2.0.153">
+<link rel="stylesheet" href="./static/css/chrome.min.css?v=2.0.153">
+<script src="./static/js/theme-boot.min.js?v=2.0.153"></script>
 </head>
 <body class="admin-body">
 <form id="admin-fields" autocomplete="off" style="display:contents">
@@ -225,6 +225,72 @@
         <span class="mm-pageinfo" id="mm-pageinfo"></span>
         <button class="btn" id="mm-next" type="button">下一页</button>
       </div>
+    </div>
+  </div>
+
+  <!-- 模型汇总 -->
+  <style>
+    /* 模型汇总:每个汇总项一张卡片,成员渠道在卡内按优先级平铺 */
+    .ma-card { border:1px solid var(--hairline); border-radius:12px; padding:12px 14px; margin:0 0 12px; background:var(--bg-surface); }
+    .ma-card.is-off { opacity:.62; }
+    .ma-head { display:flex; align-items:baseline; gap:8px; flex-wrap:wrap; }
+    .ma-id { font-weight:600; word-break:break-all; }
+    .ma-tag { font-size:11px; line-height:1.7; padding:1px 7px; border-radius:999px; background:var(--bg-hover); color:var(--text-secondary); white-space:nowrap; }
+    .ma-tag.auto { background:color-mix(in srgb, var(--accent) 15%, transparent); color:var(--accent); }
+    .ma-meta { margin:6px 0 8px; }
+    .ma-members { display:flex; flex-direction:column; gap:4px; margin:0 0 9px; }
+    .ma-member { display:flex; align-items:center; gap:7px; font-size:13px; flex-wrap:wrap; }
+    .ma-member .ma-idx { color:var(--text-tertiary); min-width:14px; text-align:right; }
+    .ma-member.is-bad { color:var(--text-tertiary); }
+    .ma-member .ma-bad { font-size:11px; padding:1px 6px; border-radius:999px; background:var(--bg-hover); }
+    .ma-ops { display:flex; gap:6px; flex-wrap:wrap; align-items:center; }
+    .ma-ops .spacer { flex:1; }
+    .ma-pick { max-height:240px; overflow:auto; border:1px solid var(--hairline); border-radius:10px; padding:8px 10px; margin:2px 0 6px; }
+    .ma-pick-prov { font-size:12px; color:var(--text-secondary); margin:6px 0 4px; }
+    .ma-pick-prov:first-child { margin-top:0; }
+    .ma-pick-row { display:flex; align-items:center; gap:7px; font-size:13px; padding:2px 0; }
+    .ma-pick-row label { display:flex; align-items:center; gap:7px; cursor:pointer; }
+  </style>
+  <div class="admin-panel" id="panel-modelagg">
+    <div class="admin-card">
+      <h2>模型汇总</h2>
+      <p class="muted small"><b>一句话：把多个渠道的模型合并成一个前台可见的 ID。</b>开启后，被汇总的模型在前台和开放 API 里<b>只显示这一个 ID</b>，看上去就和「只添加了一个供应商、只有一个模型」完全一样；请求会按你选的策略在这些渠道之间分流。</p>
+
+      <label class="user-form-admin"><span class="switch"><input type="checkbox" id="ma-enabled"><span class="slider"></span></span><span>启用模型汇总（默认关闭；关闭时前台与开放 API 完全按原样显示）</span></label>
+      <label class="user-form-admin"><span class="switch"><input type="checkbox" id="ma-automerge" checked><span class="slider"></span></span><span>默认汇总同名模型（同一个模型名出现在 2 个以上渠道时自动合并成一个 ID，ID 就是模型名本身）</span></label>
+      <label class="user-form-admin"><span class="switch"><input type="checkbox" id="ma-hide-unmerged"><span class="slider"></span></span><span>只显示汇总 ID（开启后未进任何汇总的模型在前台一并隐藏；默认关闭，避免误伤）</span></label>
+      <p class="muted small" style="margin:-4px 0 12px">「同名自动汇总」的成员是<b>实时计算</b>的：渠道新增或改名后自动跟上，不需要重新生成。你仍然可以单独改它的显示顺序、分流策略与扣费。</p>
+
+      <details class="mm-help">
+        <summary>展开看详细说明（新手向）</summary>
+        <div class="muted small" style="line-height:1.8;padding-top:8px">
+          <p style="margin:0 0 8px"><b>这个功能解决什么？</b>你从多家上游买了同一个模型（比如两家都有 <code>gpt-4o</code>），不汇总的话前台会出现两条一样的模型，用户不知道选哪个，还容易挑到不稳定的那家。汇总后前台只有一条 <code>gpt-4o</code>，背后两家自动轮流或互为备份。</p>
+          <p style="margin:0 0 6px"><b>两种分流策略：</b></p>
+          <ul style="margin:0 0 10px;padding-left:20px">
+            <li><b>故障自动转移</b>（默认）：永远先用列表里第一个渠道，它在连接失败 / 限流 / 5xx / 密钥失效时自动换下一个渠道重试，用户无感。</li>
+            <li><b>轮询</b>：每次请求按顺序换一个渠道，把调用量摊到各家（适合按量套餐或多账号均衡负载）。</li>
+          </ul>
+          <p style="margin:0 0 6px"><b>顺序就是优先级：</b>列表顺序＝前台显示顺序，也是「故障自动转移」的尝试顺序。用上/下按钮调整。</p>
+          <p style="margin:0 0 6px"><b>失败重试只在「还没开始回答」时发生：</b>一旦上游已经吐出第一个字并开始回给用户，就不会再换渠道（否则会出现两段拼接的回答），此时按正常失败处理。</p>
+          <p style="margin:0 0 6px"><b>扣费怎么算？</b>留空时按「候选里最贵的一个」预扣，上游返回后按<b>实际命中的那个渠道</b>结算、多退少补。若组内多个渠道单价不同，建议直接在这里填一个固定次数。</p>
+          <p style="margin:0 0 6px"><b>窗口与输出上限：</b>取候选里<b>最小</b>的那个，保证同一个请求对任何一个渠道都塞得下。</p>
+          <p style="margin:0 0 6px"><b>权限：</b>汇总项会按每个用户自己的「模型授权」过滤 —— 用户无权访问的渠道不会进入候选，也不会被故障转移用到。</p>
+          <p style="margin:0 0 0"><b>故障渠道自动跳过：</b>某个渠道近期连续失败会被熔断，请求直接落到还活着的渠道。</p>
+        </div>
+      </details>
+
+      <div class="row-actions" style="display:flex;gap:8px;flex-wrap:wrap;margin:10px 0">
+        <button class="btn primary" id="ma-settings-save" type="button">保存总开关</button>
+        <button class="btn" id="ma-new" type="button">手动新增汇总</button>
+        <button class="btn" id="ma-automerge-run" type="button" title="按当前渠道配置重新生成/清理同名汇总（手工汇总不受影响）">重新生成同名汇总</button>
+        <span class="muted small" id="ma-status" style="align-self:center"></span>
+      </div>
+
+      <div class="mm-note muted small" id="ma-dupes-note" hidden>
+        检测到 <b id="ma-dupes-count">0</b> 个模型名在多个渠道都存在：<span id="ma-dupes-list" class="muted small"></span>
+      </div>
+
+      <div id="ma-list"></div>
     </div>
   </div>
 
@@ -1226,17 +1292,17 @@
   </div>
 </div>
 </form>
-<script defer src="./static/js/config.min.js?v=2.0.149"></script>
-<script defer src="./static/js/icons.min.js?v=2.0.149"></script>
-<script defer src="./vendor/markdown-it/markdown-it.min.js?v=2.0.149"></script>
-<script defer src="./vendor/markdown-it/markdown-it-footnote.min.js?v=2.0.149"></script>
-<script defer src="./vendor/markdown-it/markdown-it-emoji.min.js?v=2.0.149"></script>
-<script defer src="./vendor/dompurify/purify.min.js?v=2.0.149"></script>
-<script defer src="./vendor/katex/katex.min.js?v=2.0.149"></script>
-<script defer src="./vendor/highlight/highlight.min.js?v=2.0.149"></script>
-<script defer src="./static/js/ui.min.js?v=2.0.149"></script>
-<script defer src="./static/js/components.min.js?v=2.0.149"></script>
-<script defer src="./static/js/renderer.min.js?v=2.0.149"></script>
-<script defer src="./static/js/admin.min.js?v=2.0.149"></script>
+<script defer src="./static/js/config.min.js?v=2.0.153"></script>
+<script defer src="./static/js/icons.min.js?v=2.0.153"></script>
+<script defer src="./vendor/markdown-it/markdown-it.min.js?v=2.0.153"></script>
+<script defer src="./vendor/markdown-it/markdown-it-footnote.min.js?v=2.0.153"></script>
+<script defer src="./vendor/markdown-it/markdown-it-emoji.min.js?v=2.0.153"></script>
+<script defer src="./vendor/dompurify/purify.min.js?v=2.0.153"></script>
+<script defer src="./vendor/katex/katex.min.js?v=2.0.153"></script>
+<script defer src="./vendor/highlight/highlight.min.js?v=2.0.153"></script>
+<script defer src="./static/js/ui.min.js?v=2.0.153"></script>
+<script defer src="./static/js/components.min.js?v=2.0.153"></script>
+<script defer src="./static/js/renderer.min.js?v=2.0.153"></script>
+<script defer src="./static/js/admin.min.js?v=2.0.153"></script>
 </body>
 </html>

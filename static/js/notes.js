@@ -6,8 +6,8 @@
  *  - 图片/附件上传(粘贴、拖拽、选择文件)→ /api/notes/upload,签名 URL 内嵌预览
  *  - 分享:仅自己可见 / 持链接查看 / 持链接可编辑(/n/{token},关闭或重新生成即失效)
  *  - AI 归档:消息操作栏「保存到 AI 笔记」→ AI 判定文件夹/标题/标签并结构化,确认后保存
- *  - 数据:本地 localStorage 为即时层,云端 /api/sync/notes 按 baseRevision 乐观并发同步
- *    (删除走 tombs 墓碑,与对话云同步同构)
+ *  - 数据:本地副本走 OCStore(IndexedDB 优先,localStorage 兜底)作即时层,
+ *    云端 /api/sync/notes 按 baseRevision 乐观并发同步(删除走 tombs 墓碑,与对话云同步同构)
  */
 (function () {
   const UNCATA = 'uncat';  // 内部 id 保持不变(兼容已存数据),界面文案为「默认分类」
@@ -19,6 +19,7 @@
   let resolvedWarm = false;
   const N = {
     ready: false,
+    _localLoaded: false,   // 本地副本是否已从 OCStore 读过(见 loadLocalDoc)
     doc: { folders: [], notes: [], tombs: {} },
     revision: 0,
     shares: [],
@@ -120,41 +121,25 @@
       createdAt: now, updatedAt: now, system: true,
     });
   }
-  let localFullWarned = false;
   function persistLocal() {
     const payload = { doc: N.doc, revision: N.revision, shares: N.shares };
-    try {
-      localStorage.setItem(lsDocKey(), JSON.stringify(payload));
-      localFullWarned = false;
-      return;
-    } catch (e) { /* 容量满:降级重试 + 明确告知用户 */ }
-    // 降级:本地只留索引(正文不落本地),避免完全失去离线副本;
-    // 同时必须提示——否则用户以为改动安全,刷新后却回退到旧版本。
-    try {
-      const slim = {
-        doc: {
-          folders: N.doc.folders,
-          tombs: N.doc.tombs,
-          notes: N.doc.notes.map((n) => Object.assign({}, n, {
-            content: '', // 正文不落本地(云端仍是权威副本)
-            _localSlim: true,
-          })),
-        },
-        revision: N.revision,
-        shares: N.shares,
-        _slim: true,
-      };
-      localStorage.setItem(lsDocKey(), JSON.stringify(slim));
-      if (!localFullWarned) {
-        localFullWarned = true;
-        toast('浏览器本地缓存已满：内容已保存到云端，但本机不再缓存笔记正文', true);
-      }
-    } catch (e2) {
-      if (!localFullWarned) {
-        localFullWarned = true;
-        toast('浏览器本地缓存已满，且无法写入索引；请清理站点数据后重试', true);
-      }
-    }
+    // OCStore 在写不进去时自己会提示一次(「本地存储已满」),这里只管换更小的副本:
+    // 本地只留索引(正文不落本地)保住离线副本的骨架,云端仍是权威副本。
+    if (window.OCStore.set(lsDocKey(), JSON.stringify(payload))) return;
+    const slim = {
+      doc: {
+        folders: N.doc.folders,
+        tombs: N.doc.tombs,
+        notes: N.doc.notes.map((n) => Object.assign({}, n, {
+          content: '', // 正文不落本地(云端仍是权威副本)
+          _localSlim: true,
+        })),
+      },
+      revision: N.revision,
+      shares: N.shares,
+      _slim: true,
+    };
+    window.OCStore.set(lsDocKey(), JSON.stringify(slim));
   }
   function persistUi() {
     try { localStorage.setItem(lsUiKey(), JSON.stringify(N.ui)); } catch (e) {}
@@ -162,7 +147,7 @@
   }
   function loadLocal() {
     try {
-      const raw = localStorage.getItem(lsDocKey());
+      const raw = window.OCStore.get(lsDocKey());
       if (!raw) return false;
       const j = JSON.parse(raw);
       if (!j || !j.doc || !Array.isArray(j.doc.notes)) return false;
@@ -436,17 +421,26 @@
     if (N.userId !== id) {
       N.userId = id;
       N.ready = false;
+      N._localLoaded = false;
       resolvedWarm = false;
       N.doc = { folders: [], notes: [], tombs: {} };
       N.revision = 0;
       N.shares = [];
-      loadLocal();
-      loadUi();
     }
     return true;
   }
+  // 笔记正文可以很长(一篇几万字),本地副本放 IndexedDB:localStorage 那 5MB 装不下
+  // 一个重度用户的笔记。打开库并把上个版本留在 localStorage 的旧副本迁进来,然后再读。
+  async function loadLocalDoc() {
+    if (N._localLoaded) return;
+    N._localLoaded = true;
+    if (window.OCStore) { try { await window.OCStore.ready([lsDocKey()]); } catch (e) { /* 退回 localStorage */ } }
+    loadLocal();
+    loadUi();
+  }
   async function ensureLoaded() {
     if (!ensureUser()) return false;
+    await loadLocalDoc();
     if (!N.ready) {
       N.ready = true;
       alignShareState();
@@ -3752,13 +3746,15 @@
   // 否则用户没打开过笔记时 @ 候选里看不到任何笔记。
   function warmUp() {
     if (!ensureUser()) return Promise.resolve(false);
-    if (N.ready) return Promise.resolve(true);
-    return new Promise((resolve) => {
-      N.ready = true;
-      alignShareState();
-      pullFromCloud().finally(() => {
-        // 预热后不自动开界面,只让数据可用
-        resolve(true);
+    return loadLocalDoc().then(() => {
+      if (N.ready) return true;
+      return new Promise((resolve) => {
+        N.ready = true;
+        alignShareState();
+        pullFromCloud().finally(() => {
+          // 预热后不自动开界面,只让数据可用
+          resolve(true);
+        });
       });
     });
   }

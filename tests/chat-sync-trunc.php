@@ -102,5 +102,27 @@ $ac = tc_sanitize_chats($oneChat(array(array('role' => 'assistant', 'content' =>
 if (!$hasBrokenImage($ac)) $ok('助手消息无半截图片');
 else $bad('助手消息残留半截图片');
 
+echo "\n== 7. 同步往返不丢「开放 API 会话」标记 ==\n";
+// 同一个坑的另一面:apiKey 是服务端在开放 API 调用(tc_api_append_chat)时写下的标记,
+// 前台据此把接口调用与手动对话分开显示(「今天 API」单独成组、可一键隐藏)。
+// tc_sanitize_chats 是白名单,漏掉它就等于客户端把列表推回云端一次、标记永久消失 ——
+// 本机照样正常(本地副本自己还带着),只有换设备拉取后才集体退化,和上面那个截断缺陷一样
+// 属于「本机永远复现不出来」的类型,所以在这里一起锁住。
+$apiChat = tc_sanitize_chats(array(array(
+    'id' => 'api0a1b2c3d4e5f',
+    'title' => 'API · 你好',
+    'apiKey' => 'a1b2c3d4e5f60718',
+    'messages' => array(array('role' => 'user', 'content' => '你好')),
+)));
+$eq('apiKey 原样保留', isset($apiChat[0]['apiKey']) ? $apiChat[0]['apiKey'] : null, 'a1b2c3d4e5f60718');
+// 普通对话不能凭空多出标记:多了的话前台会把手动聊天也塞进「今天 API」里
+$plainChat = tc_sanitize_chats($oneChat(array(array('role' => 'user', 'content' => 'hi'))));
+$eq('普通会话不会凭空多出标记', isset($plainChat[0]['apiKey']) ? $plainChat[0]['apiKey'] : null, null);
+$longKey = tc_sanitize_chats(array(array(
+    'id' => 'api9', 'apiKey' => str_repeat('k', 200),
+    'messages' => array(array('role' => 'user', 'content' => 'hi')),
+)));
+$eq('超长标记按 64 字符截断', strlen((string) $longKey[0]['apiKey']), 64);
+
 echo "\n结果: " . ($fail === 0 ? '全部通过' : ($fail . ' 项失败')) . "\n";
 exit($fail === 0 ? 0 : 1);

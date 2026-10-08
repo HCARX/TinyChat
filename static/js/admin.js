@@ -4525,6 +4525,342 @@ async function clearModelMeta() {
   refreshModelMeta();
 }
 
+// ============ 模型汇总（自定义 ID 聚合多模型 + 轮询/故障转移） ============
+const MA_STATE = { groups: [], providers: [], dupes: [], nextOrder: 1, settings: {}, _init: false };
+
+const MA_STRATEGY_LABEL = { failover: '故障自动转移', roundrobin: '轮询' };
+
+function maProviderById(id) {
+  return MA_STATE.providers.find((p) => p.id === String(id)) || null;
+}
+function maProviderName(id) {
+  const p = maProviderById(id);
+  return p ? p.name : '';
+}
+// 成员的可用性:渠道不存在 / 渠道被停用 / 渠道里已没有该模型 —— 三种都标出来,
+// 否则管理员只会看到「前台没生效」却不知道是哪一条断的。
+function maMemberState(m) {
+  const p = maProviderById(m.providerId);
+  if (!p) return { ok: false, why: '渠道已删除' };
+  if (!p.enabled) return { ok: false, why: '渠道已停用' };
+  if (!(p.models || []).some((x) => String(x.id) === String(m.model))) return { ok: false, why: '渠道里已无此模型' };
+  return { ok: true, why: '' };
+}
+
+async function loadModelAgg() {
+  if (!MA_STATE._init) {
+    MA_STATE._init = true;
+    if ($('ma-settings-save')) $('ma-settings-save').addEventListener('click', saveModelAggSettings);
+    if ($('ma-new')) $('ma-new').addEventListener('click', () => editModelAgg(null));
+    if ($('ma-automerge-run')) $('ma-automerge-run').addEventListener('click', runModelAggAutomerge);
+  }
+  await refreshModelAgg();
+}
+
+async function refreshModelAgg() {
+  const wrap = $('ma-list');
+  try {
+    const r = await api('/api/admin/model-groups');
+    const d = await r.json();
+    if (!r.ok) { if (wrap) wrap.innerHTML = '<p class="muted small">' + escapeHtml((d.error && d.error.message) || '加载失败') + '</p>'; return; }
+    MA_STATE.groups = d.groups || [];
+    MA_STATE.providers = d.providers || [];
+    MA_STATE.dupes = d.dupes || [];
+    MA_STATE.nextOrder = d.nextOrder || 1;
+    MA_STATE.settings = d.settings || {};
+  } catch (e) {
+    if (wrap) wrap.innerHTML = '<p class="muted small">加载失败：' + escapeHtml(e.message) + '</p>';
+    return;
+  }
+  const s = MA_STATE.settings;
+  if ($('ma-enabled')) $('ma-enabled').checked = !!s.modelAggEnabled;
+  if ($('ma-automerge')) $('ma-automerge').checked = s.modelAggAutoMerge !== false;
+  if ($('ma-hide-unmerged')) $('ma-hide-unmerged').checked = !!s.modelAggHideUnmerged;
+  renderModelAgg();
+}
+
+function renderModelAgg() {
+  const wrap = $('ma-list');
+  if (!wrap) return;
+  const st = $('ma-status');
+  if (st) st.textContent = '共 ' + MA_STATE.groups.length + ' 个汇总 ID';
+  // 同名可汇总提示:让管理员一眼看到「有哪些模型名在多个渠道都有」
+  const dn = $('ma-dupes-note');
+  if (dn) {
+    dn.hidden = !MA_STATE.dupes.length;
+    if ($('ma-dupes-count')) $('ma-dupes-count').textContent = String(MA_STATE.dupes.length);
+    if ($('ma-dupes-list')) {
+      $('ma-dupes-list').textContent = MA_STATE.dupes.slice(0, 12).map((x) => x.name + '（' + x.count + ' 个渠道）').join('、')
+        + (MA_STATE.dupes.length > 12 ? ' 等' : '');
+    }
+  }
+  if (!MA_STATE.groups.length) {
+    wrap.innerHTML = '<p class="muted small">还没有汇总 ID。打开上面的「默认汇总同名模型」并保存，或点「手动新增汇总」自己指定一个 ID 与成员。</p>';
+    return;
+  }
+  wrap.innerHTML = MA_STATE.groups.map((g, i) => {
+    const tags = [];
+    tags.push('<span class="ma-tag' + (g.auto ? ' auto' : '') + '">' + (g.auto ? '同名自动' : '手动') + '</span>');
+    tags.push('<span class="ma-tag">' + (MA_STRATEGY_LABEL[g.strategy] || MA_STRATEGY_LABEL.failover) + '</span>');
+    tags.push('<span class="ma-tag">' + (g.candidateCount || 0) + ' 个可用渠道</span>');
+    if (!g.enabled) tags.push('<span class="ma-tag">已停用</span>');
+    const members = (g.resolved || []).map((m, mi) => {
+      const bad = !m.exists ? '渠道里已无此模型' : (!m.enabled ? '渠道已停用' : '');
+      return '<div class="ma-member' + (bad ? ' is-bad' : '') + '">'
+        + '<span class="ma-idx">' + (mi + 1) + '.</span>'
+        + '<span>' + escapeHtml(maProviderName(m.providerId) || m.providerName || m.providerId || '（渠道已删除）') + '</span>'
+        + '<span class="muted small">' + escapeHtml(m.model) + '</span>'
+        + (bad ? '<span class="ma-bad">' + escapeHtml(bad) + '</span>' : '')
+        + '</div>';
+    }).join('');
+    const costText = g.cost === null || g.cost === undefined ? '按实际命中的渠道扣费（预扣取候选最大值）' : ('固定 ' + g.cost + ' 次/调用');
+    return '<div class="ma-card' + (g.enabled ? '' : ' is-off') + '">'
+      + '<div class="ma-head"><span class="ma-id">' + escapeHtml(g.id) + '</span>'
+      + (g.label && g.label !== g.id ? '<span class="muted small">显示名：' + escapeHtml(g.label) + '</span>' : '')
+      + tags.join('') + '</div>'
+      + '<div class="ma-meta muted small">顺序 ' + (Number(g.order) || 0) + ' · ' + costText + (g.auto ? ' · 成员随渠道配置实时计算' : '') + '</div>'
+      + '<div class="ma-members">' + (members || '<div class="ma-member is-bad">没有任何成员渠道</div>') + '</div>'
+      + '<div class="ma-ops">'
+      + '<button class="btn small" type="button" data-ma-up="' + i + '"' + (i === 0 ? ' disabled' : '') + '>上移</button>'
+      + '<button class="btn small" type="button" data-ma-down="' + i + '"' + (i === MA_STATE.groups.length - 1 ? ' disabled' : '') + '>下移</button>'
+      + '<button class="btn small" type="button" data-ma-edit="' + i + '">编辑</button>'
+      + '<button class="btn small" type="button" data-ma-toggle="' + i + '">' + (g.enabled ? '停用' : '启用') + '</button>'
+      + '<span class="spacer"></span>'
+      + '<button class="btn small danger" type="button" data-ma-del="' + i + '">删除</button>'
+      + '</div></div>';
+  }).join('');
+  wrap.querySelectorAll('[data-ma-up]').forEach((b) => b.addEventListener('click', () => moveModelAgg(parseInt(b.dataset.maUp, 10), -1)));
+  wrap.querySelectorAll('[data-ma-down]').forEach((b) => b.addEventListener('click', () => moveModelAgg(parseInt(b.dataset.maDown, 10), 1)));
+  wrap.querySelectorAll('[data-ma-edit]').forEach((b) => b.addEventListener('click', () => editModelAgg(MA_STATE.groups[parseInt(b.dataset.maEdit, 10)])));
+  wrap.querySelectorAll('[data-ma-toggle]').forEach((b) => b.addEventListener('click', () => toggleModelAgg(parseInt(b.dataset.maToggle, 10))));
+  wrap.querySelectorAll('[data-ma-del]').forEach((b) => b.addEventListener('click', () => deleteModelAgg(parseInt(b.dataset.maDel, 10))));
+}
+
+async function saveModelAggSettings() {
+  const btn = $('ma-settings-save');
+  if (btn) btn.disabled = true;
+  try {
+    const payload = {
+      modelAggEnabled: !!($('ma-enabled') && $('ma-enabled').checked),
+      modelAggAutoMerge: !!($('ma-automerge') && $('ma-automerge').checked),
+      modelAggHideUnmerged: !!($('ma-hide-unmerged') && $('ma-hide-unmerged').checked),
+    };
+    // 走统一的设置接口:后端在这些键上是浅合并,不会动到其它设置
+    const r = await api('/api/admin/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    const d = await r.json();
+    if (!r.ok) throw new Error((d.error && d.error.message) || '保存失败');
+    toast(payload.modelAggEnabled ? '已启用模型汇总' + (payload.modelAggAutoMerge ? '（已按同名自动生成汇总）' : '') : '已关闭模型汇总');
+    await refreshModelAgg();
+  } catch (e) {
+    toast('保存失败: ' + e.message, true);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function runModelAggAutomerge() {
+  const btn = $('ma-automerge-run');
+  if (btn) btn.disabled = true;
+  try {
+    const r = await api('/api/admin/model-groups/automerge', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ minProviders: 2 }) });
+    const d = await r.json();
+    if (!r.ok) throw new Error((d.error && d.error.message) || '生成失败');
+    toast('同名汇总已刷新：新增 ' + d.added + '，清理 ' + d.removed + '，现有 ' + d.kept + ' 个');
+    await refreshModelAgg();
+  } catch (e) {
+    toast('生成失败: ' + e.message, true);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+// 上/下移:只在这些汇总 ID 之间重排它们的 order 值(不动供应商的 order),
+// 这样「汇总默认排在供应商之后」的既有格局不会被一次拖动打乱。
+async function moveModelAgg(idx, dir) {
+  const ids = MA_STATE.groups.map((g) => g.id);
+  const to = idx + dir;
+  if (to < 0 || to >= ids.length) return;
+  const tmp = ids[idx]; ids[idx] = ids[to]; ids[to] = tmp;
+  try {
+    const r = await api('/api/admin/model-groups', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'reorder', order: ids }) });
+    const d = await r.json();
+    if (!r.ok) throw new Error((d.error && d.error.message) || '排序失败');
+    await refreshModelAgg();
+  } catch (e) {
+    toast('排序失败: ' + e.message, true);
+  }
+}
+
+async function toggleModelAgg(idx) {
+  const g = MA_STATE.groups[idx];
+  if (!g) return;
+  await saveModelAggGroup({ group: Object.assign({}, g, { enabled: !g.enabled, __origId: g.id }) }, g.enabled ? '已停用 ' : '已启用 ');
+}
+
+async function deleteModelAgg(idx) {
+  const g = MA_STATE.groups[idx];
+  if (!g) return;
+  const extra = g.auto ? '这是一个「同名自动」汇总：下次点「重新生成同名汇总」或保存总开关时会被重新创建。' : '';
+  const ok = window.OCUI && window.OCUI.confirm
+    ? await window.OCUI.confirm({ title: '删除汇总', message: '确认删除汇总 ID「' + g.id + '」？其成员渠道会重新按原样出现在前台。' + extra, danger: true, confirmText: '删除' })
+    : window.confirm('确认删除汇总 ID「' + g.id + '」？');
+  if (!ok) return;
+  try {
+    const r = await api('/api/admin/model-groups', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: g.id }) });
+    const d = await r.json();
+    if (!r.ok) throw new Error((d.error && d.error.message) || '删除失败');
+    toast('已删除 ' + g.id);
+    await refreshModelAgg();
+  } catch (e) {
+    toast('删除失败: ' + e.message, true);
+  }
+}
+
+async function saveModelAggGroup(payload, okPrefix) {
+  try {
+    const r = await api('/api/admin/model-groups', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    const d = await r.json();
+    if (!r.ok) throw new Error((d.error && d.error.message) || '保存失败');
+    toast((okPrefix || '已保存 ') + d.group.id);
+    await refreshModelAgg();
+    return true;
+  } catch (e) {
+    toast('保存失败: ' + e.message, true);
+    return false;
+  }
+}
+
+// 新增/编辑弹窗。item 为 null 时是新增;auto 组的成员是实时算出来的,成员勾选只读。
+function editModelAgg(item) {
+  const isNew = !item;
+  const isAuto = !!(item && item.auto);
+  const sel = new Set(isNew ? [] : (item.members || []).map((m) => m.providerId + '|' + m.model));
+  const esc = escapeHtml;
+  const wrap = document.createElement('div');
+  wrap.className = 'modal-mask';
+  // 成员选择器:按渠道分组列出全部模型(含已停用渠道,便于先配好再启用)
+  const pick = MA_STATE.providers.map((p) => {
+    if (!(p.models || []).length) return '';
+    const rows = p.models.map((m) => {
+      const key = p.id + '|' + m.id;
+      return '<div class="ma-pick-row"><label><input type="checkbox" data-ma-pick="' + esc(key) + '"'
+        + (sel.has(key) ? ' checked' : '') + (isAuto ? ' disabled' : '') + '>'
+        + '<span>' + esc(m.name || m.id) + '</span>'
+        + '<span class="muted small">' + esc(m.id) + '</span>'
+        + (m.image ? '<span class="ma-tag">图</span>' : (m.video ? '<span class="ma-tag">视频</span>' : ''))
+        + '</label></div>';
+    }).join('');
+    return '<div class="ma-pick-prov">' + esc(p.name || p.id) + (p.enabled ? '' : '（已停用）') + '<span class="muted small"> · ' + esc(p.id) + '</span></div>' + rows;
+  }).join('');
+  wrap.innerHTML = ''
+    + '<div class="modal admin-modal" role="dialog" aria-modal="true">'
+    + '<div class="modal-header"><h3>' + (isNew ? '新增汇总 ID' : '编辑汇总 ID') + '</h3>'
+    + '<button class="icon-btn" type="button" data-close aria-label="关闭">✕</button></div>'
+    + '<div class="modal-body">'
+    + '<p class="muted small">汇总 ID 就是前台和开放 API 里看到的<b>模型名</b>。成员渠道按从上到下的顺序作为优先级（故障自动转移时先试第一个）。</p>'
+    + '<label class="field"><span>汇总 ID *</span><input id="ma-edit-id" type="text" maxlength="100" value="' + esc(isNew ? '' : item.id) + '" placeholder="例如 gpt-4o" autocomplete="off" spellcheck="false"' + (isNew || isAuto ? '' : ' readonly') + '></label>'
+    + (isAuto ? '<p class="muted small" style="margin:-6px 0 8px">这是「同名自动」汇总：成员随渠道配置实时计算，改 ID 或成员请直接改渠道，或在下方删除本汇总。</p>' : '')
+    + '<label class="field"><span>前台显示名（留空＝直接用汇总 ID）</span><input id="ma-edit-label" type="text" maxlength="60" value="' + esc(item && item.label ? item.label : '') + '" autocomplete="off"></label>'
+    + '<div class="pkg-form-grid">'
+    + '<label class="field"><span>分流策略</span>'
+    + '<div class="select-box" id="ma-edit-strategy" data-value="' + esc((item && item.strategy) || 'failover') + '" role="button" tabindex="0">'
+    + '<span class="sb-label">' + (MA_STRATEGY_LABEL[(item && item.strategy) || 'failover']) + '</span>'
+    + '<span class="sb-arrow"><svg class="oc-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 9.5L12 14.5 17 9.5"/></svg></span>'
+    + '</div></label>'
+    + '<label class="field"><span>显示顺序（越小越靠前）</span><input id="ma-edit-order" type="number" min="0" step="1" value="' + (item ? Number(item.order) || 0 : MA_STATE.nextOrder) + '"></label>'
+    + '</div>'
+    + '<label class="field"><span>单次扣费次数（留空＝按实际命中渠道折算，预扣取候选最大值）</span><input id="ma-edit-cost" type="number" min="0" max="1000" step="0.01" value="' + (item && item.cost !== null && item.cost !== undefined ? item.cost : '') + '" placeholder="留空"></label>'
+    + '<div class="pkg-form-grid">'
+    + '<label class="field"><span>归类</span>'
+    + '<div class="select-box" id="ma-edit-media" data-value="' + ((item && item.video) ? 'video' : ((item && item.image) ? 'image' : 'chat')) + '" role="button" tabindex="0">'
+    + '<span class="sb-label">' + ((item && item.video) ? '生视频模型' : ((item && item.image) ? '生图模型' : '对话模型')) + '</span>'
+    + '<span class="sb-arrow"><svg class="oc-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 9.5L12 14.5 17 9.5"/></svg></span>'
+    + '</div></label>'
+    + '<label class="field"><span>&nbsp;</span>'
+    + '<label class="user-form-admin"><span class="switch"><input type="checkbox" id="ma-edit-enabled"' + (!item || item.enabled !== false ? ' checked' : '') + '><span class="slider"></span></span><span>启用</span></label>'
+    + '</label>'
+    + '</div>'
+    + '<div class="field"><span>成员渠道' + (isAuto ? '（实时计算，只读）' : '（勾选后按下面的顺序生效）') + '</span>'
+    + '<div class="ma-pick" id="ma-edit-pick">' + (pick || '<p class="muted small">还没有可选的供应商模型，请先在「供应商」里添加。</p>') + '</div>'
+    + (isAuto ? '' : '<p class="muted small" id="ma-edit-count" style="margin:4px 0 0"></p>')
+    + '</div>'
+    + '</div>'
+    + '<div class="modal-footer"><button class="btn" type="button" data-close>取消</button><button class="btn primary" type="button" id="ma-edit-save">保存</button></div>'
+    + '</div>';
+  document.body.appendChild(wrap);
+  const rm = () => wrap.remove();
+  wrap.querySelectorAll('[data-close]').forEach((b) => b.addEventListener('click', rm));
+  wrap.addEventListener('mousedown', (e) => { if (e.target === wrap) rm(); });
+  // 分流策略 / 归类:站内自定义下拉(与后台其它 select-box 同一套)
+  const strategyBox = wrap.querySelector('#ma-edit-strategy');
+  const mediaBox = wrap.querySelector('#ma-edit-media');
+  const bindSelect = (box, opts) => {
+    if (!box || !window.OC || !OC.openSelect) return;
+    const labelOf = (v) => { const o = opts.find((x) => x.value === v); return o ? o.label : opts[0].label; };
+    const sync = () => {
+      const v = box.getAttribute('data-value') || opts[0].value;
+      const lb = box.querySelector('.sb-label');
+      if (lb) lb.textContent = labelOf(v);
+    };
+    const open = () => {
+      OC.openSelect(box, opts, {
+        selected: box.getAttribute('data-value') || opts[0].value,
+        onSelect: (val) => { box.setAttribute('data-value', val); sync(); },
+      });
+    };
+    box.addEventListener('click', open);
+    box.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
+  };
+  bindSelect(strategyBox, [{ value: 'failover', label: MA_STRATEGY_LABEL.failover }, { value: 'roundrobin', label: MA_STRATEGY_LABEL.roundrobin }]);
+  bindSelect(mediaBox, [{ value: 'chat', label: '对话模型' }, { value: 'image', label: '生图模型' }, { value: 'video', label: '生视频模型' }]);
+  // 已选成员的顺序 = 勾选状态在 DOM 里的先后(天然与渠道目录顺序一致),这里只提示条数
+  const countEl = wrap.querySelector('#ma-edit-count');
+  const syncCount = () => {
+    if (!countEl) return;
+    const n = wrap.querySelectorAll('#ma-edit-pick [data-ma-pick]:checked').length;
+    countEl.textContent = '已选 ' + n + ' 个成员' + (n ? '' : '（至少选 1 个）');
+  };
+  wrap.querySelectorAll('#ma-edit-pick [data-ma-pick]').forEach((c) => c.addEventListener('change', syncCount));
+  syncCount();
+  if (window.OCUI && window.OCUI.openModal) window.OCUI.openModal(wrap);
+  const saveBtn = wrap.querySelector('#ma-edit-save');
+  saveBtn.addEventListener('click', async () => {
+    const id = String(wrap.querySelector('#ma-edit-id').value || '').trim();
+    if (!id) return toast('请填写汇总 ID', true);
+    if (id.indexOf('agg:') === 0) return toast('汇总 ID 不能以 agg: 开头', true);
+    const members = [];
+    if (!isAuto) {
+      wrap.querySelectorAll('#ma-edit-pick [data-ma-pick]:checked').forEach((c) => {
+        const parts = String(c.dataset.maPick).split('|');
+        members.push({ providerId: parts[0], model: parts.slice(1).join('|') });
+      });
+      if (!members.length) return toast('请至少选择一个成员模型', true);
+    }
+    const costRaw = String(wrap.querySelector('#ma-edit-cost').value || '').trim();
+    const media = mediaBox ? (mediaBox.getAttribute('data-value') || 'chat') : 'chat';
+    const payload = {
+      group: {
+        id,
+        label: String(wrap.querySelector('#ma-edit-label').value || '').trim(),
+        strategy: strategyBox ? (strategyBox.getAttribute('data-value') || 'failover') : 'failover',
+        order: Math.max(0, parseInt(wrap.querySelector('#ma-edit-order').value, 10) || 0),
+        cost: costRaw === '' ? null : Math.max(0, parseFloat(costRaw) || 0),
+        image: media === 'image',
+        video: media === 'video',
+        enabled: !!wrap.querySelector('#ma-edit-enabled').checked,
+        auto: isAuto,
+        matchId: isAuto ? (item.matchId || item.id) : '',
+        members,
+      },
+    };
+    if (!isNew) payload.group.__origId = item.id;
+    saveBtn.disabled = true;
+    const okSave = await saveModelAggGroup(payload);
+    saveBtn.disabled = false;
+    if (okSave) rm();
+  });
+}
+
 const TAB_LOADERS = {
   notes: loadNotesSettings,
   im: loadImSettings,
@@ -4542,6 +4878,7 @@ const TAB_LOADERS = {
   providers: () => loadProviders(),
   chat: () => loadChatSettings(),
   modelmeta: () => loadModelMeta(),
+  modelagg: () => loadModelAgg(),
   perf: () => loadPerfSettings(),
   search: () => loadSearchSettings(),
   docs: () => loadSearchSettings(),
@@ -4788,7 +5125,7 @@ const ADMIN_GROUPS = {
     { id: 'codes-gen', label: '生成兑换码' },
     { id: 'codes-fixed', label: '添加固定兑换码' },
   ],
-  platform: [{ id: 'providers', label: '供应商' }, { id: 'modelmeta', label: '模型元数据' }, { id: 'thinking', label: 'AI 思考' }, { id: 'chat', label: '对话设置' }, { id: 'perf', label: '性能优化' }, { id: 'openapi', label: '开放 API' }, { id: 'search', label: '联网搜索' }, { id: 'docs', label: '文档解析' }, { id: 'moderation', label: '内容安全' }, { id: 'oauth', label: '第三方登录' }, { id: 'storage', label: '存储管理' }, { id: 'update', label: '版本更新' }],
+  platform: [{ id: 'providers', label: '供应商' }, { id: 'modelmeta', label: '模型元数据' }, { id: 'modelagg', label: '模型汇总' }, { id: 'thinking', label: 'AI 思考' }, { id: 'chat', label: '对话设置' }, { id: 'perf', label: '性能优化' }, { id: 'openapi', label: '开放 API' }, { id: 'search', label: '联网搜索' }, { id: 'docs', label: '文档解析' }, { id: 'moderation', label: '内容安全' }, { id: 'oauth', label: '第三方登录' }, { id: 'storage', label: '存储管理' }, { id: 'update', label: '版本更新' }],
   thinking: [{ id: 'thinking', label: '思考策略' }],
   content: [{ id: 'assistants', label: '助手库' }],
 };

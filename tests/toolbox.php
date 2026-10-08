@@ -258,12 +258,13 @@ $manyCats = array();
 for ($i = 0; $i <= TC_TOOLBOX_MAX_CATS; $i++) $manyCats[] = array('id' => 'c' . $i, 'name' => 'n' . $i);
 eq('分类超上限按截断处理(不让整次保存失败)', count(tc_sanitize_toolbox_cats($manyCats)), TC_TOOLBOX_MAX_CATS);
 
-// 内置系统工具箱:10 套工具 / 5 个分类,且每一套都是完整可跑的整页
+// 内置系统工具箱:12 套工具 / 6 个分类,且每一套都是完整可跑的整页
+// v3 起每套工具是一个独立文件(lib/toolbox-tools/*.php),由 toolbox-v3.php 扫描汇总
 // (平时由 tc_seed_system_toolbox 惰性 require,这里直接引进来单测这批模板)
 require_once $root . '/lib/toolbox-default.php';
 $sys = tc_toolbox_default_system();
-eq('内置工具 10 套', count($sys['items']), 10);
-eq('内置分类 5 个', count($sys['cats']), 5);
+eq('内置工具 12 套', count($sys['items']), 12);
+eq('内置分类 6 个', count($sys['cats']), 6);
 $badTool = '';
 foreach ($sys['items'] as $it) {
     $h = (string) $it['html'];
@@ -278,7 +279,13 @@ foreach ($sys['items'] as $it) {
 eq('每套内置工具都是自洽的整页(完整 doctype/有脚本/不超限/不依赖存储/不引外链)', $badTool, '');
 $sysTitles = array_column($sys['items'], 'title');
 eq('内置工具包含 Base64 编解码', in_array('Base64 编解码', $sysTitles, true), true);
-eq('内置工具包含 UUID 生成', in_array('UUID 生成', $sysTitles, true), true);
+eq('内置工具包含批量二维码生成与识别', in_array('批量二维码生成与识别', $sysTitles, true), true);
+// id 是升级迁移的锚点:存量库靠 id 认「这套还是出厂原文吗」,改 id 等于让老库永远收不到新版
+$sysIds = array_column($sys['items'], 'id');
+$wantIds = array('base64', 'urlcode', 'jsonfmt', 'timestamp', 'hash', 'regex', 'jwt', 'password', 'uuid', 'color', 'texttool', 'qrcode');
+sort($sysIds); sort($wantIds);
+eq('内置工具的 id 集合就是约定的那 12 个', $sysIds, $wantIds);
+eq('没有重名工具(下拉里不会出现两个一样的条目)', count($sysTitles), count(array_unique($sysTitles)));
 $sysCats = array_column($sys['cats'], 'id');
 $dangling = array();
 foreach ($sys['items'] as $it) if (!in_array($it['cat'], $sysCats, true)) $dangling[] = $it['id'];
@@ -329,26 +336,42 @@ foreach ($v1Sys['items'] as $it) {
     if (!isset($v1Hashes[$it['id']]) || sha1($it['html']) !== $v1Hashes[$it['id']]) $drift[] = $it['id'];
 }
 eq('冻结的 2.0.145 出厂包装仍能按字节重算(迁移判据的前提)', $drift, array());
-$diffCount = 0;
-foreach ($sys['items'] as $it) {
-    foreach ($v1Sys['items'] as $old) if ($old['id'] === $it['id'] && $old['html'] !== $it['html']) $diffCount++;
+// 2.0.147-2.0.151 出厂的那份同样要冻结:老库升上来时认的就是这两份原文
+$v2Sys = tc_toolbox_default_system_v2();
+eq('冻结的 2.0.151 出厂内容仍是 10 套(v3 就是拿它认人的)', count($v2Sys['items']), 10);
+$v2Same = array();
+foreach ($v2Sys['items'] as $it) {
+    foreach ($v1Sys['items'] as $old) if ($old['id'] === $it['id'] && $old['html'] === $it['html']) $v2Same[] = $it['id'];
 }
-eq('新版与出厂原文确实不同(否则迁移无事可做)', $diffCount, 10);
+eq('2.0.151 的正文确实整体换过(和 2.0.145 逐字节不同,两份冻结块没写重)', $v2Same, array());
+// 同名 id 的新旧正文必须真的不同,否则迁移「替换原文」是空动作,断言会假绿
+$common = 0; $diffCount = 0;
+foreach ($sys['items'] as $it) {
+    foreach ($v1Sys['items'] as $old) {
+        if ($old['id'] !== $it['id']) continue;
+        $common++;
+        if ($old['html'] !== $it['html']) $diffCount++;
+    }
+}
+eq('新旧同名工具的套数与迁移预期一致', $common, 10);
+eq('新版与出厂原文确实不同(否则迁移无事可做)', $diffCount, $common);
 hasnt('新版包装里没有留空脚本标签', $sys['items'][0]['html'], '<script></script>');
 
-// 迁移:存量库里那 10 套还是 2.0.145 的原文,种子标记已置位不会重种,得单独顺移一次。
-// 管理员动过的那几套(逐字节不同)必须原样不动。
+// 迁移(v2 顺移):存量库里那 10 套还是 2.0.145 的原文,种子标记已置位不会重种,得单独顺移一次。
+// 这一层的产出是 2.0.151 那版内容 —— 后面 v3 顺移再把它们换成重写版。
+$v2ById = array();
+foreach (tc_toolbox_default_system_v2()['items'] as $it) $v2ById[$it['id']] = $it['html'];
 $legacy = tc_toolbox_default_system_v1();
 $legacy['items'][0]['html'] = str_replace('</body>', '<!-- 管理员加的一行 --></body>', $legacy['items'][0]['html']);
-$migDb = tc_migrate_db(array('sysToolbox' => $legacy, 'toolboxSysSeeded' => true));
+$migDb = tc_migrate_db(array('sysToolbox' => $legacy, 'toolboxSysSeeded' => true, 'toolboxDefaultsV3Merged' => true));
 $migById = array();
 foreach ($migDb['sysToolbox']['items'] as $it) $migById[$it['id']] = $it['html'];
 $stale = array();
-foreach ($sys['items'] as $it) {
-    if ($it['id'] === 'base64') continue;   // 这套是管理员改过的,本来就不该被换掉
-    if (!isset($migById[$it['id']]) || $migById[$it['id']] !== $it['html']) $stale[] = $it['id'];
+foreach ($v2ById as $id => $html) {
+    if ($id === 'base64') continue;   // 这套是管理员改过的,本来就不该被换掉
+    if (!isset($migById[$id]) || $migById[$id] !== $html) $stale[] = $id;
 }
-eq('存量库里的出厂原文都换成了新版', $stale, array());
+eq('存量库里的出厂原文都换成了 2.0.151 版', $stale, array());
 has('管理员改过的那套原样保留(判据是逐字节比对)', $migById['base64'], '管理员加的一行');
 eq('登记了迁移标记(只跑一次)', !empty($migDb['toolboxDefaultsV2Merged']), true);
 $migAgain = tc_migrate_db($migDb);
@@ -358,11 +381,52 @@ eq('管理员删光系统工具后迁移不会塞回来', $migEmpty['sysToolbox'
 has('迁移里调了顺移函数', $coreSrc, 'tc_migrate_toolbox_defaults($db)');
 has('顺移会把改动落库(读请求不落库)', $fnBody($coreSrc, 'tc_migrate_toolbox_defaults'), '_tc_db_seed_dirty');
 has('顺移的判据是「与出厂原文逐字节相同」', $fnBody($coreSrc, 'tc_migrate_toolbox_defaults'), 'tc_toolbox_default_system_v1()');
+// 目标必须是这一代的冻结工厂:写成活的 tc_toolbox_default_system() 会让老库一步填成最新版,
+// 下一层 v3 顺移就认不出出厂原文,新版独有的工具补不进来(升级后少二维码/JWT)
+has('顺移的目标是这一代的冻结工厂(不是活的当前版本)', $fnBody($coreSrc, 'tc_migrate_toolbox_defaults'), 'tc_toolbox_default_system_v2()');
+
+// ---------- 6c) v3 顺移:把 2.0.145 / 2.0.151 的出厂原文换成重写版 ----------
+// 判据同样是逐字节比对,只是要认两份原文;管理员改过的一律不碰。
+has('迁移里调了 v3 顺移', $coreSrc, 'tc_migrate_toolbox_defaults_v3($db)');
+has('v3 顺移只跑一次(靠标记位)', $fnBody($coreSrc, 'tc_migrate_toolbox_defaults_v3'), 'toolboxDefaultsV3Merged');
+has('v3 顺移会把改动落库(读请求不落库)', $fnBody($coreSrc, 'tc_migrate_toolbox_defaults_v3'), '_tc_db_seed_dirty');
+$migV3 = tc_migrate_db(array('sysToolbox' => tc_toolbox_default_system_v2(), 'toolboxSysSeeded' => true, 'toolboxDefaultsV2Merged' => true));
+$v3ById = array();
+foreach ($migV3['sysToolbox']['items'] as $it) $v3ById[$it['id']] = $it['html'];
+$v3Miss = array();
+foreach ($sys['items'] as $it) if (!isset($v3ById[$it['id']]) || $v3ById[$it['id']] !== $it['html']) $v3Miss[] = $it['id'];
+eq('2.0.151 的原文全部换成重写版(10 套换 + 新版独有的补进来)', $v3Miss, array());
+eq('重写版工具数量翻新到库里', count($migV3['sysToolbox']['items']), count($sys['items']));
+$v3Cats = array_column($migV3['sysToolbox']['cats'], 'id');
+eq('新版独有的分类也补进来了', count(array_diff(array_column($sys['cats'], 'id'), $v3Cats)), 0);
+// v1 -> v3 一步到位(老库可能直接跨过来)
+$migV3b = tc_migrate_db(array('sysToolbox' => tc_toolbox_default_system_v1(), 'toolboxSysSeeded' => true, 'toolboxDefaultsV2Merged' => true));
+eq('2.0.145 也能一步换到重写版', count($migV3b['sysToolbox']['items']), count($sys['items']));
+// 管理员留下的痕迹必须原样
+$legacyV3 = tc_toolbox_default_system_v2();
+$legacyV3['items'][0]['html'] = str_replace('</body>', '<!-- 管理员加的一行 --></body>', $legacyV3['items'][0]['html']);
+$custom = array('id' => 'mine', 'cat' => 'enc', 'title' => '我自己写的', 'html' => '<!doctype html><html><body>我的</body></html>');
+$legacyV3['items'][] = $custom;
+$migV3c = tc_migrate_db(array('sysToolbox' => $legacyV3, 'toolboxSysSeeded' => true, 'toolboxDefaultsV2Merged' => true));
+$v3cById = array();
+foreach ($migV3c['sysToolbox']['items'] as $it) $v3cById[$it['id']] = $it['html'];
+has('v3 顺移不动管理员改过的那套', $v3cById['base64'], '管理员加的一行');
+eq('v3 顺移不动管理员自建的工具', $v3cById['mine'], $custom['html']);
+eq('v3 顺移不重复迁移(标记置位后第二次无变化)', tc_migrate_db($migV3c)['sysToolbox'], $migV3c['sysToolbox']);
+// 删干净了就是删干净了:不能因为库里没东西就判定「这还是出厂内容」再塞回来
+eq('v3 顺移不会把清空的工具箱塞回来', tc_migrate_db(array('sysToolbox' => array('cats' => array(), 'items' => array()), 'toolboxSysSeeded' => true, 'toolboxDefaultsV2Merged' => true))['sysToolbox']['items'], array());
+
+// 一次完整的升级链:2.0.145 的老库直接升到当前版本,必须拿到全部重写版工具(含新版独有的)
+$chain = tc_migrate_db(array('sysToolbox' => tc_toolbox_default_system_v1(), 'toolboxSysSeeded' => true, 'toolboxDefaultsV2Merged' => true));
+$chainIds = array_column($chain['sysToolbox']['items'], 'id');
+eq('2.0.145 一步升上来就拿到全部重写版工具(两层顺移接力,不吞新版工具)', count($chain['sysToolbox']['items']), count($sys['items']));
+eq('2.0.145 一步升上来后新版独有的工具也在', count(array_diff(array_column($sys['items'], 'id'), $chainIds)), 0);
+eq('2.0.145 一步升上来后新版分类也在', count(array_diff(array_column($sys['cats'], 'id'), array_column($chain['sysToolbox']['cats'], 'id'))), 0);
 
 // 种子:只跑一次;管理员删光之后不会再塞回来
 $dbSeed = array('sysToolbox' => null);
 eq('首次运行会装入内置工具', tc_seed_system_toolbox($dbSeed), true);
-eq('装进来的是 10 套', count($dbSeed['sysToolbox']['items']), 10);
+eq('装进来的是 12 套', count($dbSeed['sysToolbox']['items']), 12);
 eq('第二次运行不再改动', tc_seed_system_toolbox($dbSeed), false);
 $dbEmpty = array('sysToolbox' => array('cats' => array(), 'items' => array()), 'toolboxSysSeeded' => true);
 eq('管理员把系统工具删光后不会被重新塞回', tc_seed_system_toolbox($dbEmpty), false);
@@ -376,7 +440,7 @@ has('引导流程把种子落库(读请求不落库,不写下去就每请求重�
 // 库里有 sysToolbox 时用它;为 null(还没种)时用内置默认值兜底
 $dbSys = array('sysToolbox' => array('cats' => array(array('id' => 'c1', 'name' => '我的分类')), 'items' => array(array('id' => 'only', 'cat' => 'c1', 'title' => '只有这一个', 'html' => '<p>x</p>'))));
 eq('库里有系统工具就用库里的', count(tc_sys_toolbox_of($dbSys)['items']), 1);
-eq('库里为 null 时用内置默认值兜底(装好第一屏不会是空的)', count(tc_sys_toolbox_of(array('sysToolbox' => null))['items']), 10);
+eq('库里为 null 时用内置默认值兜底(装好第一屏不会是空的)', count(tc_sys_toolbox_of(array('sysToolbox' => null))['items']), 12);
 
 // 页面地址:两套命名空间必须互不通用,否则用户工具页的合法链接能拿去读同名系统工具
 if (tc_toolbox_page_token('base64', true) !== tc_toolbox_page_token('base64', false)) ok('系统工具与用户工具签名命名空间分开'); else no('两种工具的签名相同(可互相顶替)');
@@ -386,6 +450,19 @@ hasnt('用户工具地址不带 sys', tc_toolbox_page_url('abc'), 'sys=1');
 $sysPub = tc_sys_toolbox_public_doc($dbSys);
 has('系统工具的下发投影带 pageUrl(新标签页打开靠它)', $sysPub['items'][0]['pageUrl'], 'sys=1');
 eq('系统工具文档不带墓碑(单份文档不需要)', isset($sysPub['tombs']), false);
+
+// 系统工具的正文不随列表下发:重写版 12 套整页合计约 860KB(gzip 也有 230KB),而列表只要
+// 标题/分类/体积。正文按 pageUrl 现取(取到的就是服务端存的同一份 HTML),后台要编辑才带正文。
+eq('前台拿到的系统工具不带正文(否则每开一次面板就要下几百 KB)', isset($sysPub['items'][0]['html']), false);
+eq('前台拿到的是体积字段(卡片上的 KB 靠它,不能靠正文长度算)', is_int($sysPub['items'][0]['size']) && $sysPub['items'][0]['size'] > 0, true);
+$sysPubFull = tc_sys_toolbox_public_doc($dbSys, true);
+has('后台拿到的投影带正文(要编辑)', $sysPubFull['items'][0]['html'], '<p>x</p>');
+$weigh = array('sysToolbox' => array('cats' => array(), 'items' => array(array('id' => 'a', 'cat' => '', 'title' => 't', 'html' => str_repeat('x', 4321)))));
+eq('体积字段就是正文的字节数(不能糊一个常数)', tc_sys_toolbox_public_doc($weigh)['items'][0]['size'], 4321);
+// 出厂内容整份下发也要是常数级的小:这条挡的是「哪天有人又顺手把正文塞回列表里」
+$realPub = tc_sys_toolbox_public_doc(array('sysToolbox' => tc_toolbox_default_system()));
+eq('12 套工具的列表下发不到 40KB(正文改成按需取)', strlen(json_encode($realPub)) < 40000, true);
+eq('列表下发里 12 套都在(瘦身不能把条目也削掉)', count($realPub['items']), 12);
 
 // 系统工具的额度是另一套:上限参数化后可验,越界仍要明确报错
 $three = array();
