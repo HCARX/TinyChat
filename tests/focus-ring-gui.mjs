@@ -400,7 +400,10 @@ console.log('\n== 6. 字体切换往返:实际中文字形与切片样式表 =='
       try {
         await Promise.race([
           (async () => {
-            await document.fonts.load('400 24px "TinyChat Text"', text);
+            // 系统/本机字体可能走 CSS 的后备栈,CI 不一定安装 local() 中的字体名。
+            if (document.getElementById('oc-cjk-font-css')) {
+              await document.fonts.load('400 24px "TinyChat Text"', text);
+            }
             await document.fonts.ready;
             await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
           })(),
