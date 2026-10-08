@@ -316,16 +316,59 @@ async function loadStorage() {
         + '<div class="st-row-val"><button class="btn small" type="button" id="st-deleted-open">查看 / 清理</button></div></div>'
       : '<p class="muted small">暂无用户删除的对话。</p>';
   }
-  const fileRow = (f) => '<div class="st-row"><div class="st-row-main"><div class="st-row-name">' + escapeHtml(f.name) + '</div>'
-    + '<div class="st-row-desc">' + fmtTime(f.mtime) + '</div></div>'
-    + '<div class="st-row-val">' + fmtBytesBig(f.bytes) + '</div></div>';
-  if ($('st-images')) $('st-images').innerHTML = d.images.count
-    ? d.images.items.map(fileRow).join('') + (d.images.count > d.images.items.length ? '<p class="muted small">仅显示最近 ' + d.images.items.length + ' 个，共 ' + d.images.count + ' 个。</p>' : '')
-    : '<p class="muted small">暂无生图留存文件。</p>';
-  if ($('st-backups')) $('st-backups').innerHTML = d.backups.count
-    ? d.backups.items.map(fileRow).join('') + (d.backups.count > d.backups.items.length ? '<p class="muted small">仅显示最近 ' + d.backups.items.length + ' 个，共 ' + d.backups.count + ' 个。</p>' : '')
-    : '<p class="muted small">暂无备份文件（可在「版本更新」页开启自动备份）。</p>';
+  // 文件清单一律分页:接口只给最近 30 个,全铺出来会随文件数把页面拉得很长。
+  // 折叠标题上直接写清「多少文件 / 多大」,不展开也知道规模。
+  // 每次刷新数据回到第一页(文件是「最近优先」的,刷新后停在旧页码没有意义)
+  ST_PAGES.data = { images: d.images, backups: d.backups };
+  ST_PAGES.resetPages();
+  ST_PAGES.repaint();
 }
+// 存储管理页里「文件清单」的分页状态:两份清单共用一套渲染,接口只取一次。
+// 单独放在模块级是因为翻页按钮要重画,而 loadStorage 的局部变量那时已经出栈了。
+const ST_PAGES = {
+  data: { images: { count: 0, items: [], bytes: 0 }, backups: { count: 0, items: [], bytes: 0 } },
+  per: 10,
+  resetPages() {
+    const a = $('st-images-pager'), b = $('st-backups-pager');
+    if (a) a.dataset.page = '1';
+    if (b) b.dataset.page = '1';
+  },
+  repaint() {
+    ST_PAGES.render('st-images', 'st-images-pager', 'st-images-sum', ST_PAGES.data.images, '暂无生图留存文件。');
+    ST_PAGES.render('st-backups', 'st-backups-pager', 'st-backups-sum', ST_PAGES.data.backups, '暂无备份文件（可在「版本更新」页开启自动备份）。');
+  },
+  render(boxId, pagerId, sumId, list, emptyText) {
+    const box = $(boxId), pager = $(pagerId), sum = $(sumId);
+    if (!box) return;
+    const total = (list && list.count) || 0;
+    const items = (list && list.items) || [];
+    const fileRow = (f) => '<div class="st-row"><div class="st-row-main"><div class="st-row-name">' + escapeHtml(f.name) + '</div>'
+      + '<div class="st-row-desc">' + fmtTime(f.mtime) + '</div></div>'
+      + '<div class="st-row-val">' + fmtBytesBig(f.bytes) + '</div></div>';
+    if (!total) {
+      if (sum) sum.textContent = '（无）';
+      box.innerHTML = '<p class="muted small">' + emptyText + '</p>';
+      if (pager) { pager.innerHTML = ''; pager.dataset.page = '1'; }
+      return;
+    }
+    if (sum) sum.textContent = '（' + total + ' 个 · ' + fmtBytesBig(list.bytes) + '）';
+    const per = ST_PAGES.per;
+    let page = Math.max(1, parseInt(pager && pager.dataset.page, 10) || 1);
+    const pages = Math.max(1, Math.ceil(items.length / per));
+    if (page > pages) page = pages;
+    if (pager) pager.dataset.page = String(page);
+    box.innerHTML = items.slice((page - 1) * per, page * per).map(fileRow).join('')
+      + (total > items.length
+        ? '<p class="muted small">仅列出最近 ' + items.length + ' 个，共 ' + total + ' 个（完整清单在服务器的 data 目录）。</p>'
+        : '');
+    if (pager) {
+      pager.innerHTML = items.length <= per ? ''
+        : '<button class="btn small" type="button" data-st-page="' + boxId + '" data-st-dir="-1"' + (page <= 1 ? ' disabled' : '') + '>上一页</button>'
+          + '<span class="muted small">第 ' + page + ' / ' + pages + ' 页</span>'
+          + '<button class="btn small" type="button" data-st-page="' + boxId + '" data-st-dir="1"' + (page >= pages ? ' disabled' : '') + '>下一页</button>';
+    }
+  },
+};
 // ============ 用户删除的对话（云端留档）查看 / 批量清理 ============
 let DC_PAGE = 1;
 let DC_DATA = { items: [], total: 0, pageSize: 50 };
@@ -519,6 +562,16 @@ async function purgeDeletedChats(payload, confirmMsg) {
 (function initStoragePanel() {
   const b = $('st-refresh');
   if (b) b.addEventListener('click', () => { b.disabled = true; Promise.resolve(loadStorage()).then(() => { b.disabled = false; }); });
+  // 文件清单的翻页:数据已经在手上,只改页码重画那一段,不必重新请求接口
+  document.addEventListener('click', (e) => {
+    const pg = e.target.closest('[data-st-page]');
+    if (!pg) return;
+    const pager = pg.closest('.st-pager');
+    if (!pager) return;
+    const dir = parseInt(pg.getAttribute('data-st-dir'), 10) || 0;
+    pager.dataset.page = String(Math.max(1, (parseInt(pager.dataset.page, 10) || 1) + dir));
+    ST_PAGES.repaint();
+  });
   const box = $('st-clean');
   if (!box) return;
   box.addEventListener('click', async (e) => {
@@ -4441,7 +4494,7 @@ function editModelMeta(item) {
     + '<label class="field"><span>缓存读价格（$/百万）</span><input id="mm-edit-cread" type="number" min="0" step="0.0001" value="' + (item ? mmPricePerMillion(item.cacheReadCostPerToken) : '') + '"></label>'
     + '<label class="field"><span>缓存写价格（$/百万）</span><input id="mm-edit-cwrite" type="number" min="0" step="0.0001" value="' + (item ? mmPricePerMillion(item.cacheWriteCostPerToken) : '') + '"></label>'
     + '</div>'
-    + '<label class="user-form-admin"><span class="switch"><input type="checkbox" id="mm-edit-enabled"' + (!item || item.enabled !== false ? ' checked' : '') + '><span class="slider"></span></span><span>启用（停用后该条不参与窗口计算，但数据保留）</span></label>'
+    + '<div class="field ma-edit-enabled-row"><label class="user-form-admin"><span class="switch"><input type="checkbox" id="mm-edit-enabled"' + (!item || item.enabled !== false ? ' checked' : '') + '><span class="slider"></span></span><span>启用（停用后该条不参与窗口计算，但数据保留）</span></label></div>'
     + '</div>'
     + '<div class="modal-footer"><button class="btn" type="button" data-close>取消</button><button class="btn primary" type="button" id="mm-edit-save">保存</button></div>'
     + '</div>';
@@ -4526,7 +4579,7 @@ async function clearModelMeta() {
 }
 
 // ============ 模型汇总（自定义 ID 聚合多模型 + 轮询/故障转移） ============
-const MA_STATE = { groups: [], providers: [], dupes: [], nextOrder: 1, settings: {}, _init: false };
+const MA_STATE = { groups: [], providers: [], userProviders: [], dupes: [], nextOrder: 1, settings: {}, _init: false };
 
 const MA_STRATEGY_LABEL = { failover: '故障自动转移', roundrobin: '轮询' };
 
@@ -4565,6 +4618,7 @@ async function refreshModelAgg() {
     if (!r.ok) { if (wrap) wrap.innerHTML = '<p class="muted small">' + escapeHtml((d.error && d.error.message) || '加载失败') + '</p>'; return; }
     MA_STATE.groups = d.groups || [];
     MA_STATE.providers = d.providers || [];
+    MA_STATE.userProviders = d.userProviders || [];
     MA_STATE.dupes = d.dupes || [];
     MA_STATE.nextOrder = d.nextOrder || 1;
     MA_STATE.settings = d.settings || {};
@@ -4731,6 +4785,24 @@ async function saveModelAggGroup(payload, okPrefix) {
 }
 
 // 新增/编辑弹窗。item 为 null 时是新增;auto 组的成员是实时算出来的,成员勾选只读。
+// 新增/编辑弹窗。item 为 null 时是新增;auto 组的成员是实时算出来的,成员勾选只读。
+// 弹窗底部给出「用户自建渠道」的只读清单:它们不属于平台资源,永远不进汇总成员。
+function userProvNote() {
+  const ups = MA_STATE.userProviders || [];
+  if (!ups.length) return '';
+  const rows = ups.map((p) => {
+    const owner = p.ownerName ? esc(p.ownerName) : '某用户';
+    const models = (p.models || []).map((m) => m.id).join('、');
+    return '<div class="ma-pick-row readonly"><span class="ma-user-badge">用户自建</span>'
+      + '<span>' + esc(p.name || p.id) + '</span>'
+      + '<span class="muted small">' + esc(owner) + ' · ' + esc(models || '（无模型）') + '</span></div>';
+  }).join('');
+  return '<div class="field ma-user-prov"><span>用户自建渠道（' + ups.length + '，不参与汇总）</span>'
+    + '<p class="muted small" style="margin:0 0 6px">这些是用户在自己的设置里添加的渠道，属于他们个人的配置。'
+    + '把它们汇总进来，用户一删自己的渠道，全体用户的汇总 ID 就会跟着少一个成员；而且用户本来就能在自己的列表里直接用这些模型。</p>'
+    + '<div class="ma-pick ma-pick-readonly">' + rows + '</div></div>';
+}
+
 function editModelAgg(item) {
   const isNew = !item;
   const isAuto = !!(item && item.auto);
@@ -4738,7 +4810,9 @@ function editModelAgg(item) {
   const esc = escapeHtml;
   const wrap = document.createElement('div');
   wrap.className = 'modal-mask';
-  // 成员选择器:按渠道分组列出全部模型(含已停用渠道,便于先配好再启用)
+  // 成员选择器:只列平台渠道(管理员添加的)。用户在前台自建的渠道不是平台资源,
+  // 不能成为全局汇总组的成员 —— 该用户删掉自己的渠道时,全体用户的汇总会跟着少一个成员。
+  // 下面单独列出它们(只读),让管理员看得见「为什么某个模型的渠道数比预期少」。
   const pick = MA_STATE.providers.map((p) => {
     if (!(p.models || []).length) return '';
     const rows = p.models.map((m) => {
@@ -4776,14 +4850,15 @@ function editModelAgg(item) {
     + '<span class="sb-label">' + ((item && item.video) ? '生视频模型' : ((item && item.image) ? '生图模型' : '对话模型')) + '</span>'
     + '<span class="sb-arrow"><svg class="oc-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 9.5L12 14.5 17 9.5"/></svg></span>'
     + '</div></label>'
-    + '<label class="field"><span>&nbsp;</span>'
-    + '<label class="user-form-admin"><span class="switch"><input type="checkbox" id="ma-edit-enabled"' + (!item || item.enabled !== false ? ' checked' : '') + '><span class="slider"></span></span><span>启用</span></label>'
-    + '</label>'
+    + '<div class="field"><span>&nbsp;</span>'
+    + '<label class="user-form-admin ma-edit-enabled-row"><span class="switch"><input type="checkbox" id="ma-edit-enabled"' + (!item || item.enabled !== false ? ' checked' : '') + '><span class="slider"></span></span><span>启用</span></label>'
+    + '</div>'
     + '</div>'
     + '<div class="field"><span>成员渠道' + (isAuto ? '（实时计算，只读）' : '（勾选后按下面的顺序生效）') + '</span>'
     + '<div class="ma-pick" id="ma-edit-pick">' + (pick || '<p class="muted small">还没有可选的供应商模型，请先在「供应商」里添加。</p>') + '</div>'
     + (isAuto ? '' : '<p class="muted small" id="ma-edit-count" style="margin:4px 0 0"></p>')
     + '</div>'
+    + userProvNote()
     + '</div>'
     + '<div class="modal-footer"><button class="btn" type="button" data-close>取消</button><button class="btn primary" type="button" id="ma-edit-save">保存</button></div>'
     + '</div>';

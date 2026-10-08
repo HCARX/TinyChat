@@ -5565,3 +5565,232 @@ body.admin-body { overflow: visible !important; }
   color: var(--text);
   font: inherit;
 }
+
+/* ============================================================
+   后台「模型汇总」面板:卡片与其成员/可选成员列表
+   ------------------------------------------------------------
+   这套 ma-* 类此前只有 JS 在生成,样式一条也没有 —— 面板因此按浏览器默认渲染:
+   勾选框紧贴文字、渠道分组与模型行没有层级、按钮挤在一起。同一个后台的其它面板
+   (模型元数据 mm-*)都是齐全的,这条补齐后就一致了。
+   约定与站内一致:不描边,分层靠底色与极淡的 hairline 内阴影。
+   ============================================================ */
+
+/* ---------- 汇总卡片 ---------- */
+#ma-list { display: grid; gap: 10px; }
+.ma-card {
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: var(--bg-surface);
+  box-shadow: inset 0 0 0 1px var(--hairline);
+}
+.ma-card.is-off { opacity: .62; }
+.ma-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.ma-id {
+  font-weight: 650;
+  font-size: 1rem;
+  overflow-wrap: anywhere;
+}
+.ma-meta { margin-top: 6px; }
+.ma-tag {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+  font-size: 0.786rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.ma-tag.auto { background: var(--brand-soft); color: var(--brand); }
+
+/* ---------- 卡片里的成员行(只读展示,带序号与状态) ---------- */
+.ma-members {
+  display: grid;
+  gap: 4px;
+  margin: 10px 0 0;
+}
+.ma-member {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  background: var(--bg-hover);
+  font-size: 0.929rem;
+}
+.ma-member.is-bad { color: var(--text-tertiary); }
+.ma-member.is-bad .ma-bad { color: var(--danger); font-size: 0.857rem; }
+.ma-idx {
+  flex: none;
+  min-width: 1.4em;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+.ma-ops {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+.ma-ops .spacer { flex: 1 1 auto; }
+
+/* ---------- 编辑弹窗里的成员选择器 ---------- */
+/* 一组渠道一个块:渠道名一行,模型逐行勾选。整块可滚动,避免渠道多时弹窗无限变高。 */
+.ma-pick {
+  max-height: min(46vh, 420px);
+  overflow: auto;
+  padding: 4px 2px;
+  border-radius: 10px;
+  background: var(--bg-subtle, var(--bg-hover));
+  box-shadow: inset 0 0 0 1px var(--hairline);
+}
+.ma-pick-prov {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 12px 6px;
+  background: var(--bg-subtle, var(--bg-hover));
+  font-size: 0.857rem;
+  font-weight: 650;
+  color: var(--text-secondary);
+}
+.ma-pick-row { padding: 0 6px; }
+/* 行内所有 span 的默认边距必须清掉:.field span 的 margin-bottom:6px 会漏进这里的
+   模型名/id,把文字整体上推 3px,勾选框看起来就没对齐(与 .select-box 里那条同一个
+   原因,那边也是这么修的)。 */
+.ma-pick-row span,
+.ma-pick-row .ma-tag,
+.ma-pick-prov span {
+  margin: 0;
+  display: inline-block;
+  line-height: 1.35;
+}
+/* 行的三列:勾选框 / 模型名 / 模型 id。用 grid 而不是 flex 的 baseline:
+   模型名与 id 字号不同(flex + center 会让两个 span 各自居中,视觉上错开),
+   这里让三列共享同一条中线,勾选框与模型名严格对齐。 */
+.ma-pick-row > label {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.ma-pick-row > label:hover { background: var(--bg-hover); }
+/* 复选框与文字基线对齐:给输入框一个固定尺寸并禁止收缩,长模型名再长也不会把它挤扁 */
+.ma-pick-row input[type="checkbox"] {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--brand, var(--accent));
+}
+.ma-pick-row span:first-of-type { overflow-wrap: anywhere; }
+/* 只读行(用户自建渠道):无勾选框,与可勾选行同一套内边距,视觉上仍然对齐 */
+.ma-pick-readonly { background: transparent; box-shadow: none; margin-top: 4px; }
+.ma-pick-row.readonly {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-height: 34px;
+  padding: 4px 8px;
+  margin: 0 6px 2px;
+  border-radius: 8px;
+  background: var(--bg-hover);
+  font-size: 0.929rem;
+  cursor: default;
+}
+.ma-user-badge {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: var(--bg-active);
+  color: var(--text-secondary);
+  font-size: 0.786rem;
+  font-weight: 600;
+}
+.ma-user-prov { margin-top: 14px; }
+/* 「归类 / 启用」这一行:右侧的开关要与左边的下拉框在同一条中线上。
+   此前这段是两个嵌套的 <label>(外层 .field 里又套了一个 .user-form-admin 的 label),
+   嵌套 label 是非法 HTML —— 浏览器会把关联关系打乱,内层 .switch 因此量到 0×0,
+   绝对定位的旋钮就跑到轨道外面去了(用户看到的就是「白点没对齐、溢出胶囊」)。
+   现在外层改成 div,这里补上只影响这一行的对齐。 */
+.ma-edit-enabled-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  margin: 0;
+}
+
+/* ============================================================
+   后台存储管理:可折叠的文件清单(生图留存 / 数据备份)
+   ------------------------------------------------------------
+   这两份清单会随使用不断变长(生图留存按张累积)。此前是平铺的 .admin-long-list,
+   文件一多整页就被拉得很长,而它们只是「需要时才看」的明细。收起时不占高度,
+   展开后固定高度内滚动 + 分页。
+   ============================================================ */
+.st-collapse {
+  margin: 14px 0 0;
+  border-radius: 12px;
+  background: var(--bg-subtle, var(--bg-hover));
+  box-shadow: inset 0 0 0 1px var(--hairline);
+}
+.st-collapse > summary {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 11px 14px;
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+  font-size: 0.964rem;
+  font-weight: 650;
+  color: var(--text);
+}
+/* 收起原生三角(各浏览器私名不同,三个都要写,否则会出现两个图标) */
+.st-collapse > summary::-webkit-details-marker { display: none; }
+.st-collapse > summary::marker { content: ''; }
+.st-collapse > summary::before {
+  content: '▸';
+  display: inline-block;
+  flex: none;
+  color: var(--text-tertiary);
+  transition: transform .15s ease;
+}
+.st-collapse[open] > summary::before { transform: rotate(90deg); }
+.st-collapse > summary:hover { color: var(--brand, var(--accent)); }
+.st-collapse-meta { font-weight: 400; color: var(--text-tertiary); }
+/* 展开后的正文:与标题同宽,内部再滚动,不让明细撑长整页 */
+.st-collapse > div {
+  max-height: min(46vh, 420px);
+  overflow: auto;
+  padding: 0 10px 10px;
+  scrollbar-gutter: stable;
+}
+.st-pager {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px 4px;
+}
+.st-pager:empty { display: none; }

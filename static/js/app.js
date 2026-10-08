@@ -1933,7 +1933,8 @@ function buildMsgNode(m, chat, idx) {
   if (m.error) {
     // 失败的那次若是 @模型重答,这条消息上还挂着别的模型的回答:标签条要照常画出来。
     // 否则报错会把之前那个模型的回答一起藏掉,再也切不回去。
-    if (Array.isArray(m.versions) && m.versions.length > 1) {
+    // 汇总模型失败时同理:标签上写着 Auto@ 才知道失败的是哪一轮。
+    if (Array.isArray(m.versions) && (m.versions.length > 1 || replyTabNeededForAgg(m))) {
       contentDiv.appendChild(buildReplyTabs(m, chat));
     }
     const kept = stripInterruptMarks(m.content);
@@ -1987,8 +1988,10 @@ function buildMsgNode(m, chat, idx) {
     }
     // 多版本回答:浏览器标签条置顶,并且在思考链之上
     // (不同模型各有自己的思维链,切换模型时思考内容跟着变)
-    // 生成中也挂着:新开的标签先出现,再在里面回答,和浏览器新建标签一样
-    if (Array.isArray(m.versions) && m.versions.length > 1) {
+    // 生成中也挂着:新开的标签先出现,再在里面回答,和浏览器新建标签一样。
+    // 汇总模型即使只有一条回答也画出来:汇总 ID 背后是多个渠道,用户需要从标签上
+    // 一眼看出这一轮是汇总模型答的(标签写成 Auto@模型名,logo 随模型自动匹配)。
+    if (Array.isArray(m.versions) && (m.versions.length > 1 || replyTabNeededForAgg(m))) {
       contentDiv.appendChild(buildReplyTabs(m, chat));
     }
     // 群聊成员名牌:角色、阶段、模型、时间
@@ -3313,7 +3316,8 @@ function reRenderLastAssistant(assistantMsg) {
   if (!contentEl) return;
   contentEl.innerHTML = '';
   // 标签条在思考链之上:先挂标签,思考面板插到标签后面
-  if (Array.isArray(assistantMsg.versions) && assistantMsg.versions.length > 1) {
+  // (汇总模型即使只有一条也画,让用户看得出这轮是 Auto@ 汇总答的)
+  if (Array.isArray(assistantMsg.versions) && (assistantMsg.versions.length > 1 || replyTabNeededForAgg(assistantMsg))) {
     contentEl.appendChild(buildReplyTabs(assistantMsg, chat));
   }
   if (assistantMsg.participant) contentEl.appendChild(buildParticipantTag(assistantMsg));
@@ -9160,7 +9164,22 @@ function switchReplyVersionTo(msg, chat, target) {
   renderMessages();
 }
 
-// 一个回答版本在标签上的展示:和侧栏模型切换同一套 logo 与「供应商@模型」
+// 这条回答是不是「汇总模型」答的。汇总只有一条回答时也要画出标签条 ——
+// 汇总是多个渠道共用一个 ID,标签上写着 Auto@模型名 才能说明白这一轮是谁答的。
+function replyTabNeededForAgg(msg) {
+  if (!msg || msg.role !== 'assistant') return false;
+  const pid = String(msg.providerId || '');
+  if (/^agg:/.test(pid)) return true;
+  const hit = findModelItem(pid, String(msg.model || ''));
+  if (hit && hit.agg) return true;
+  // 刷新后供应商列表还没到,但版本里留着 providerId,同样按 agg: 前缀判定
+  const vs = Array.isArray(msg.versions) ? msg.versions : [];
+  return vs.length === 1 && /^agg:/.test(String(vs[0] && vs[0].providerId || ''));
+}
+
+// 一个回答版本在标签上的展示:和侧栏模型切换同一套 logo 与「供应商@模型」。
+// 汇总(agg)项按用户的要求单独呈现:标签只写「Auto@汇总ID」一条,logo 跟着模型名走
+// (同一个汇总 ID 背后可能是不同厂商的模型,画成哪家的图标由模型名决定)。
 function replyTabMeta(v, i) {
   const modelId = String((v && v.model) || '').trim();
   const hit = findModelItem(v && v.providerId, modelId);
@@ -9169,6 +9188,17 @@ function replyTabMeta(v, i) {
     || (v && v.providerName)
     || providerNameOf((hit && hit.providerId) || (v && v.providerId))
     || '';
+  const isAgg = !!(hit && hit.agg) || /^agg:/.test(String((v && v.providerId) || ''));
+  if (isAgg) {
+    // 汇总:标签统一是「Auto@模型名」,不再拼「汇总ID@汇总ID」那种重复标签。
+    // 图标的判定输入只给模型名 —— 平台 logo 由模型名匹配(见 logos.js),
+    // 这样「gpt-4o」标 OpenAI、「claude-3」标 Anthropic,自动切换。
+    const aggModel = (hit && hit.modelId) || modelId;
+    const icon = (window.OC && OC.modelIcon && aggModel)
+      ? OC.modelIcon(aggModel, '', !!(hit && hit.isImage), !!(hit && hit.isVideo))
+      : '';
+    return { label: 'Auto@' + (aggModel || '汇总'), icon, agg: true };
+  }
   const label = (hit && hit.label)
     || (providerName && modelId ? (providerName + '@' + modelId) : '')
     || modelId

@@ -567,6 +567,8 @@ node tests/settings-merge.js   # 设置合并（逐键时间戳 / 删除墓碑 /
 node tests/local-store.js      # 本地大块数据存储契约（IndexedDB 优先 / 旧键迁移 / 兜底 / 换号清理）
 node tests/chat-image-inline.js # 正文内联图片契约（只内联缩略图 / 预算小于服务端上限 / 拿不到就不内联）
 node tests/chat-image-preview-gui.mjs  # 真浏览器：上传大图 → 落库 → 分享 → 分享页仍有图（含对照）
+node tests/model-groups-gui.mjs        # 真浏览器：汇总面板 / 前台只剩一条 / 弹窗排版几何 / Auto@ 标签
+node tests/storage-panel-gui.mjs       # 真浏览器：存储管理的文件清单默认折叠 / 分页 / 末页边界
 
 # 端到端冒烟：起真实 PHP 服务 + mock 上游，跑完整业务流
 bash tests/e2e.sh

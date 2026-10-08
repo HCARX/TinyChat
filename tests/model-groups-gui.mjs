@@ -234,6 +234,78 @@ check('未汇总的模型保持可见(默认不隐藏)', labels.some((x) => x.in
 console.log('== 4. 手动新增汇总(弹窗) ==');
 await admin.click('#ma-new');
 await admin.waitForSelector('#ma-edit-id', { timeout: 8000 });
+// 成员选择器的排版契约:这些 ma-* 类曾经一条 CSS 都没有(JS 生成、样式表里不存在),
+// 面板就按浏览器默认渲染 —— 勾选框贴着文字、渠道分组没有层级、行高忽高忽低。
+// 这里量真浏览器里的几何:勾选框与文字必须垂直居中对齐、行高一致、分组标题是吸顶的。
+const geom = await admin.evaluate(() => {
+  const pick = document.querySelector('#ma-edit-pick');
+  if (!pick) return null;
+  const rows = Array.from(pick.querySelectorAll('.ma-pick-row > label'));
+  const first = rows[0];
+  const box = first && first.querySelector('input[type="checkbox"]');
+  const span = first && first.querySelector('span');
+  const rects = rows.map((r) => +r.getBoundingClientRect().height.toFixed(1));
+  const prov = pick.querySelector('.ma-pick-prov');
+  // 只看本次打开的「新增汇总」弹窗,别抓到页面上其它弹窗(例如存储管理里的删除留档)的开关
+  const mask = Array.from(document.querySelectorAll('.modal-mask')).find((m) => m.querySelector('#ma-edit-id'));
+  const swSpan = mask && mask.querySelector('span.switch');
+  const sl = swSpan && swSpan.querySelector('.slider');
+  let switchBox = null;
+  if (sl) {
+    const g = getComputedStyle(sl, '::before');
+    const sr = sl.getBoundingClientRect();
+    const kw = parseFloat(g.width), kh = parseFloat(g.height);
+    const kl = parseFloat(g.left), kt = parseFloat(g.top);
+    const mm = (g.transform || 'none').match(/matrix\(([^)]+)\)/);
+    const tx = mm ? parseFloat(mm[1].split(',')[4]) : 0;
+    switchBox = {
+      track: [+sr.width.toFixed(1), +sr.height.toFixed(1)],
+      knob: [kw, kh], tx,
+      leftVal: kl, topVal: kt,
+      rightGap: +(sr.width - (kl + tx + kw)).toFixed(1),
+      bottomGap: +(sr.height - (kt + kh)).toFixed(1),
+      parentClass: swSpan.parentElement.className,
+      sliderParentClass: sl.parentElement.className,
+      computedFont: getComputedStyle(swSpan.parentElement).fontSize,
+      emBased: getComputedStyle(document.documentElement).fontSize,
+    };
+  }
+  return {
+    rowCount: rows.length,
+    rowHeightsUniform: rects.length > 1 && rects.every((h) => Math.abs(h - rects[0]) < 1.5),
+    rowHeight: rects[0] || null,
+    boxCount: pick.querySelectorAll('.ma-pick-row input[type="checkbox"]').length,
+    boxSize: box ? [+box.getBoundingClientRect().width.toFixed(1), +box.getBoundingClientRect().height.toFixed(1)] : null,
+    // 勾选框中心与同行文字中心的偏差:超过 2px 就是肉眼可见的「没对齐」
+    boxVsTextOffset: (box && span)
+      ? +Math.abs((box.getBoundingClientRect().top + box.getBoundingClientRect().height / 2)
+        - (span.getBoundingClientRect().top + span.getBoundingClientRect().height / 2)).toFixed(1)
+      : null,
+    provPosition: prov ? getComputedStyle(prov).position : null,
+    provHasBg: prov ? getComputedStyle(prov).backgroundColor !== 'rgba(0, 0, 0, 0)' : false,
+    listMaxHeight: getComputedStyle(pick).maxHeight,
+    switchBox,
+  };
+});
+check('成员列表按渠道分组并渲染出可勾选行', geom && geom.rowCount > 0 && geom.boxCount > 0);
+check('勾选框有明确尺寸(不是浏览器默认的小方块)', geom && geom.boxSize && geom.boxSize[0] >= 14 && geom.boxSize[1] >= 14,
+  geom && geom.boxSize ? JSON.stringify(geom.boxSize) : '未量到');
+check('勾选框与同行的模型名垂直居中对齐(偏差 ' + (geom && geom.boxVsTextOffset) + 'px ≤ 2px)',
+  geom && geom.boxVsTextOffset !== null && geom.boxVsTextOffset <= 2,
+  '没有对齐样式时 JS 生成的 class 会全部落到浏览器默认排版');
+check('每一行的行高一致(实际 ' + (geom && geom.rowHeight) + 'px)',
+  geom && geom.rowHeightsUniform, '行高忽高忽低是这套面板「看起来乱」的主因之一');
+check('成员列表限高可滚动(不再随渠道数无限拉长弹窗)',
+  geom && geom.listMaxHeight !== 'none' && /px$/.test(geom.listMaxHeight), geom && geom.listMaxHeight);
+check('渠道分组标题吸顶且有底色', geom && geom.provPosition === 'sticky' && geom.provHasBg,
+  geom ? geom.provPosition + '/' + geom.provHasBg : '未量到');
+// 开关:旋钮必须落在轨道内、四周留白对称。曾经有一版把旋钮写成百分比宽 + aspect-ratio,
+// 结果在别的样式表覆盖 transform 时垂直居中失效,旋钮溢出轨道下沿。
+console.log('   开关原始度量: ' + JSON.stringify(geom && geom.switchBox));
+check('弹窗里的开关旋钮在轨道内且留白对称(右 ' + (geom && geom.switchBox && geom.switchBox.rightGap)
+  + 'px / 下 ' + (geom && geom.switchBox && geom.switchBox.bottomGap) + 'px)',
+  !!(geom && geom.switchBox && geom.switchBox.rightGap >= 1 && geom.switchBox.bottomGap >= 1),
+  '旋钮溢出轨道就是用户看到的「白点没对齐」');
 await admin.fill('#ma-edit-id', 'my-model');
 await admin.fill('#ma-edit-label', '我的模型');
 await admin.click('#ma-edit-strategy');
@@ -295,8 +367,53 @@ labels = await pickerLabels(front);
 check('被收纳的成员模型重新出现在前台', labels.some((x) => x.includes('vendor-only')));
 check('删除后自定义 ID 不再出现', !labels.includes('我的模型'));
 
+// ---------- 9. 汇总回答在对话里只占一个标签,标签名是 Auto@模型 ----------
+// 汇总的意义是「多个渠道一个 ID」,所以一轮汇总模型回答在消息顶部只该有一条标签,
+// 而不是每个成员渠道各占一条。标签名统一为 Auto@模型名,平台 logo 由模型名匹配
+// (同一汇总 ID 背后可能是不同厂商的模型,画哪家图标要看模型名)。
+console.log('== 9. 汇总回答的标签(一条 + Auto@ + logo) ==');
+// 重新打开总开关,让前台回到「只有 agg-model 一条」的状态
+if (!(await admin.locator('#ma-enabled').isChecked())) {
+  await admin.click('#ma-enabled + .slider');
+  await admin.waitForTimeout(400);
+}
+await reloadFront(front);
+// 选中汇总模型并发一条消息
+await front.click('#model-picker');
+await front.waitForSelector('.oc-menu .oc-menu-item', { timeout: 8000 });
+await front.locator('.oc-menu .oc-menu-item', { hasText: 'agg-model' }).first().click();
+await front.waitForTimeout(300);
+await front.fill('#input', '标签自检');
+await front.press('#input', 'Enter');
+// 等回答落地(标签条要等回答有内容后才画)
+const gotReply = await front.waitForFunction(() => {
+  const t = document.querySelectorAll('.reply-tabs .reply-tab');
+  return t.length > 0;
+}, null, { timeout: 30000 }).then(() => true).catch(() => false);
+const tabInfo = await front.evaluate(() => {
+  const tabs = Array.from(document.querySelectorAll('.reply-tabs .reply-tab'));
+  const first = tabs[0];
+  const img = first ? first.querySelector('img') : null;
+  return {
+    count: tabs.length,
+    labels: tabs.map((t) => (t.querySelector('.reply-tab-label') || {}).textContent || ''),
+    titles: tabs.map((t) => t.getAttribute('title') || ''),
+    logoSrc: img ? img.getAttribute('src') : '',
+    logoSite: img ? img.className : '',
+    hasLogo: !!img,
+  };
+});
+check('汇总模型回答后出现了标签条', gotReply && tabInfo.count > 0, JSON.stringify(tabInfo));
+check('只有一个标签(不是每个成员渠道一条)', tabInfo.count === 1, '实际 ' + tabInfo.count + ' 条:' + JSON.stringify(tabInfo.labels));
+check('标签名是 Auto@agg-model(实际「' + (tabInfo.labels[0] || '') + '」)',
+  (tabInfo.labels[0] || '') === 'Auto@agg-model', JSON.stringify(tabInfo.labels));
+check('标签上没有「渠道@模型」这种拼接', !tabInfo.labels.some((x) => /渠道[AB]@/.test(x)), JSON.stringify(tabInfo.labels));
+check('标签带上了模型 logo(logo 由模型名自动匹配)', tabInfo.hasLogo && /logo|\.svg/i.test(tabInfo.logoSrc + ' ' + tabInfo.logoSite),
+  JSON.stringify({ src: tabInfo.logoSrc, cls: tabInfo.logoSite }));
+check('日志里没有 agg: 前缀泄漏到标签上', !tabInfo.labels.some((x) => x.includes('agg:')), JSON.stringify(tabInfo.labels));
+
 // ---------- 9. 无 JS 异常 ----------
-console.log('== 9. 运行期异常 ==');
+console.log("== 10. 运行期异常 ==");
 // 与其它 GUI 用例同一口径:资源加载类噪音(reload 打断在途请求 → net::ERR_ABORTED、
 // favicon 404)不算报错,只看真正的 JS 异常与脚本报错。
 const realErrors = pageErrors.filter((e) => !/favicon|Failed to load resource|net::|ERR_/i.test(e));

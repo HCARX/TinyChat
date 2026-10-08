@@ -97,6 +97,18 @@ function tc_visible_provider($user, $provider, $allowed) {
     return $copy;
 }
 
+// 汇总组成员池:只认平台渠道(管理员添加的全局渠道)。
+// 用户在前台自建的渠道不进汇总 —— 它是用户个人的资源,混进来会带来两个后果:
+//   1) 汇总 ID 的成员随「某个用户渠道的增删停启」变化,而汇总组是全局的,其它用户
+//      的汇总行为跟着受影响;
+//   2) 该用户的同名模型本就以「自己那条渠道」的形式出现在他自己的列表里,再被汇总
+//      收纳一次,他反而找不到自己那条渠道了。
+// 判定直接用 scope,与 tc_model_groups_sync_auto 建组时同一口径(不依赖 tc_provider_enabled,
+// 那个函数在 api.php 里,这一步可能先于它加载)。
+function tc_model_group_pool_provider($p) {
+    return is_array($p) && isset($p['id']) && isset($p['scope']) && $p['scope'] === 'global';
+}
+
 // 汇总组的「成员键」集合:providerId|modelId。用于把已被汇总的原始模型从
 // 供应商列表里摘掉(前台只显示汇总 ID),以及判断某个渠道的某条模型是否已被收纳。
 // 复用的是同一套可见性判定,因此集合天然只含该用户有权访问的渠道/模型。
@@ -106,7 +118,9 @@ function tc_model_group_member_keys($db, $user, $groups = null) {
     if ($groups === null) $groups = tc_model_groups_ordered($db);
     $allowed = tc_user_access($db, $user);
     $visible = array();
-    foreach (tc_visible_providers_of($db, $user) as $p) $visible[(string) $p['id']] = $p;
+    foreach (tc_visible_providers_of($db, $user) as $p) {
+        if (tc_model_group_pool_provider($p)) $visible[(string) $p['id']] = $p;
+    }
     foreach ($groups as $g) {
         if (!is_array($g)) continue;
         if (!empty($g['auto'])) {
@@ -138,7 +152,9 @@ function tc_model_group_candidates($db, $user, $group) {
     if (!is_array($group)) return array(array(), '汇总模型不存在');
     $allowed = tc_user_access($db, $user);
     $visible = array();
-    foreach (tc_visible_providers_of($db, $user) as $p) $visible[(string) $p['id']] = $p;
+    foreach (tc_visible_providers_of($db, $user) as $p) {
+        if (tc_model_group_pool_provider($p)) $visible[(string) $p['id']] = $p;
+    }
     $pairs = array();
     if (!empty($group['auto'])) {
         $match = (string) (isset($group['matchId']) && $group['matchId'] !== '' ? $group['matchId'] : $group['id']);
@@ -3256,18 +3272,34 @@ function tc_api_admin_model_groups_list() {
                 'id' => (string) $p['id'],
                 'name' => (string) (isset($p['name']) && $p['name'] !== '' ? $p['name'] : $p['id']),
                 'enabled' => tc_provider_enabled($p),
-                'scope' => isset($p['scope']) ? (string) $p['scope'] : 'user',
+                // 平台渠道(管理员添加,global)还是用户在前台自建(user)。汇总只认平台渠道:
+                // 用户自己的渠道是他个人的资源,不该成为全局汇总组的成员(理由见 core.php 里
+                // tc_model_groups_sync_auto 的注释)。
+                'scope' => (isset($p['scope']) && $p['scope'] === 'global') ? 'global' : 'user',
+                'ownerName' => '',
                 'models' => $models,
             );
+            if ($row['scope'] === 'user') {
+                $uid = isset($p['ownerId']) ? (string) $p['ownerId'] : '';
+                foreach ($db['users'] as $u) {
+                    if ((string) $u['id'] === $uid) { $row['ownerName'] = isset($u['name']) ? (string) $u['name'] : ''; break; }
+                }
+            }
             $catalog[] = $row;
             $byId[$row['id']] = $row;
         }
-        // 同名统计:同一个模型名出现在 ≥2 个「启用中」的渠道时可一键汇总
+        // 汇总的成员池只含平台渠道;用户自建渠道单独列出来给前端做只读展示(不可勾选)
+        $aggCatalog = array();
+        $extraCatalog = array();
+        foreach ($catalog as $c) {
+            if ($c['scope'] === 'global') $aggCatalog[] = $c; else $extraCatalog[] = $c;
+        }
+        // 同名统计:同一个模型名出现在 ≥2 个「启用中的」渠道时可一键汇总
         // (与 tc_model_groups_sync_auto 同一口径 —— 两处口径不一致会让「提示可汇总」
         //  与「点下去什么也没生成」同时出现)
         $count = array();
         $nameOf = array();
-        foreach ($catalog as $c) {
+        foreach ($aggCatalog as $c) {
             if (!$c['enabled']) continue;
             foreach ($c['models'] as $m) {
                 $k = tc_model_group_key($m['id']);
@@ -3287,7 +3319,7 @@ function tc_api_admin_model_groups_list() {
             $resolved = array();
             if (!empty($g['auto'])) {
                 $match = (string) ($g['matchId'] !== '' ? $g['matchId'] : $g['id']);
-                foreach ($catalog as $c) {
+                foreach ($aggCatalog as $c) {
                     foreach ($c['models'] as $m) {
                         if ((string) $m['id'] !== $match) continue;
                         $resolved[] = array(
@@ -3318,7 +3350,9 @@ function tc_api_admin_model_groups_list() {
         }
         tc_json(200, array(
             'groups' => $groups,
-            'providers' => $catalog,
+            // 汇总的可选成员池:只有平台渠道(管理员添加)。用户自建渠道单独下发,前端只读展示。
+            'providers' => $aggCatalog,
+            'userProviders' => $extraCatalog,
             'dupes' => $dupes,
             'nextOrder' => tc_next_model_group_order($db),
             'synced' => $synced,
@@ -3372,6 +3406,18 @@ function tc_api_admin_model_groups_save() {
         if (strncmp((string) $src['id'], 'agg:', 4) === 0) tc_fail(400, '汇总 ID 不能以 agg: 开头（该前缀为本站保留）');
         $item = tc_normalize_model_group($src);
         if ($item === null) tc_fail(400, '汇总 ID 无效');
+        // 成员只允许平台渠道。前台已经不给勾了,这里再挡一道:汇总组是全局的,
+        // 混进某个用户的自建渠道,该用户删掉它时全体用户的汇总就少一个成员。
+        if (empty($item['auto']) && $item['members']) {
+            $pool = array();
+            foreach ($db['providers'] as $p) {
+                if (tc_model_group_pool_provider($p)) $pool[(string) $p['id']] = true;
+            }
+            $item['members'] = array_values(array_filter($item['members'], function ($m) use ($pool) {
+                return isset($pool[(string) $m['providerId']]);
+            }));
+            if (!$item['members']) tc_fail(400, '成员必须来自平台渠道（用户自建的渠道不能作为汇总成员）');
+        }
         if (empty($item['auto']) && !$item['members']) tc_fail(400, '请至少选择一个成员模型');
         $key = tc_model_group_key($item['id']);
         if (!isset($db['modelGroups']) || !is_array($db['modelGroups'])) $db['modelGroups'] = array();

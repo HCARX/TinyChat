@@ -9,16 +9,16 @@
 <meta name="robots" content="noindex,nofollow">
 <link rel="icon" type="image/svg+xml" href="./logo-icon.svg">
 <link rel="apple-touch-icon" href="./static/logo/app-icon-192.png">
-<link rel="stylesheet" href="./static/css/style.min.css?v=2.0.155">
-<link rel="stylesheet" href="./vendor/highlight/github.min.css?v=2.0.155" id="hljs-theme">
-<link rel="stylesheet" href="./vendor/katex/katex.min.css?v=2.0.155">
-<link rel="stylesheet" href="./static/css/enhanced.min.css?v=2.0.155">
-<link rel="stylesheet" href="./static/css/refine.min.css?v=2.0.155">
-<link rel="stylesheet" href="./static/css/redesign.min.css?v=2.0.155">
-<link rel="stylesheet" href="./static/css/polish.min.css?v=2.0.155">
-<link rel="stylesheet" href="./static/css/markdown.min.css?v=2.0.155">
-<link rel="stylesheet" href="./static/css/chrome.min.css?v=2.0.155">
-<script src="./static/js/theme-boot.min.js?v=2.0.155"></script>
+<link rel="stylesheet" href="./static/css/style.min.css?v=2.0.156">
+<link rel="stylesheet" href="./vendor/highlight/github.min.css?v=2.0.156" id="hljs-theme">
+<link rel="stylesheet" href="./vendor/katex/katex.min.css?v=2.0.156">
+<link rel="stylesheet" href="./static/css/enhanced.min.css?v=2.0.156">
+<link rel="stylesheet" href="./static/css/refine.min.css?v=2.0.156">
+<link rel="stylesheet" href="./static/css/redesign.min.css?v=2.0.156">
+<link rel="stylesheet" href="./static/css/polish.min.css?v=2.0.156">
+<link rel="stylesheet" href="./static/css/markdown.min.css?v=2.0.156">
+<link rel="stylesheet" href="./static/css/chrome.min.css?v=2.0.156">
+<script src="./static/js/theme-boot.min.js?v=2.0.156"></script>
 </head>
 <body class="admin-body">
 <form id="admin-fields" autocomplete="off" style="display:contents">
@@ -259,7 +259,7 @@
       <label class="user-form-admin"><span class="switch"><input type="checkbox" id="ma-enabled"><span class="slider"></span></span><span>启用模型汇总（默认关闭；关闭时前台与开放 API 完全按原样显示）</span></label>
       <label class="user-form-admin"><span class="switch"><input type="checkbox" id="ma-automerge" checked><span class="slider"></span></span><span>默认汇总同名模型（同一个模型名出现在 2 个以上渠道时自动合并成一个 ID，ID 就是模型名本身）</span></label>
       <label class="user-form-admin"><span class="switch"><input type="checkbox" id="ma-hide-unmerged"><span class="slider"></span></span><span>只显示汇总 ID（开启后未进任何汇总的模型在前台一并隐藏；默认关闭，避免误伤）</span></label>
-      <p class="muted small" style="margin:-4px 0 12px">「同名自动汇总」的成员是<b>实时计算</b>的：渠道新增或改名后自动跟上，不需要重新生成。你仍然可以单独改它的显示顺序、分流策略与扣费。</p>
+      <p class="muted small" style="margin:-4px 0 12px">「同名自动汇总」的成员是<b>实时计算</b>的：渠道新增或改名后自动跟上，不需要重新生成。你仍然可以单独改它的显示顺序、分流策略与扣费。汇总的成员<b>只取平台渠道</b>（你在「供应商」里添加的）—— 用户在前台自己添加的渠道属于他个人的配置，不参与汇总，也不与他同名的平台渠道互相顶替。</p>
 
       <details class="mm-help">
         <summary>展开看详细说明（新手向）</summary>
@@ -1022,10 +1022,18 @@
       <div id="st-clean" class="admin-long-list"></div>
       <div class="section-title">用户删除的对话（云端留档）</div>
       <div id="st-deleted" class="admin-long-list"></div>
-      <div class="section-title">生图留存文件</div>
-      <div id="st-images" class="admin-long-list"></div>
-      <div class="section-title">数据备份</div>
-      <div id="st-backups" class="admin-long-list"></div>
+      <!-- 生图留存与备份都可能累积成百上千个文件:默认收起,展开后分页,
+           不让整页被文件清单撑长(每个区块自己滚动 + 翻页)。 -->
+      <details class="st-collapse" id="st-images-fold">
+        <summary><span class="st-collapse-title">生图留存文件</span><span class="st-collapse-meta" id="st-images-sum"></span></summary>
+        <div id="st-images"></div>
+        <div class="st-pager" id="st-images-pager"></div>
+      </details>
+      <details class="st-collapse" id="st-backups-fold">
+        <summary><span class="st-collapse-title">数据备份</span><span class="st-collapse-meta" id="st-backups-sum"></span></summary>
+        <div id="st-backups"></div>
+        <div class="st-pager" id="st-backups-pager"></div>
+      </details>
       <div class="form-actions" style="margin-top:12px">
         <button class="btn" id="st-refresh" type="button">刷新</button>
       </div>
@@ -1292,17 +1300,17 @@
   </div>
 </div>
 </form>
-<script defer src="./static/js/config.min.js?v=2.0.155"></script>
-<script defer src="./static/js/icons.min.js?v=2.0.155"></script>
-<script defer src="./vendor/markdown-it/markdown-it.min.js?v=2.0.155"></script>
-<script defer src="./vendor/markdown-it/markdown-it-footnote.min.js?v=2.0.155"></script>
-<script defer src="./vendor/markdown-it/markdown-it-emoji.min.js?v=2.0.155"></script>
-<script defer src="./vendor/dompurify/purify.min.js?v=2.0.155"></script>
-<script defer src="./vendor/katex/katex.min.js?v=2.0.155"></script>
-<script defer src="./vendor/highlight/highlight.min.js?v=2.0.155"></script>
-<script defer src="./static/js/ui.min.js?v=2.0.155"></script>
-<script defer src="./static/js/components.min.js?v=2.0.155"></script>
-<script defer src="./static/js/renderer.min.js?v=2.0.155"></script>
-<script defer src="./static/js/admin.min.js?v=2.0.155"></script>
+<script defer src="./static/js/config.min.js?v=2.0.156"></script>
+<script defer src="./static/js/icons.min.js?v=2.0.156"></script>
+<script defer src="./vendor/markdown-it/markdown-it.min.js?v=2.0.156"></script>
+<script defer src="./vendor/markdown-it/markdown-it-footnote.min.js?v=2.0.156"></script>
+<script defer src="./vendor/markdown-it/markdown-it-emoji.min.js?v=2.0.156"></script>
+<script defer src="./vendor/dompurify/purify.min.js?v=2.0.156"></script>
+<script defer src="./vendor/katex/katex.min.js?v=2.0.156"></script>
+<script defer src="./vendor/highlight/highlight.min.js?v=2.0.156"></script>
+<script defer src="./static/js/ui.min.js?v=2.0.156"></script>
+<script defer src="./static/js/components.min.js?v=2.0.156"></script>
+<script defer src="./static/js/renderer.min.js?v=2.0.156"></script>
+<script defer src="./static/js/admin.min.js?v=2.0.156"></script>
 </body>
 </html>

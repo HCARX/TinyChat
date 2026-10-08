@@ -6,7 +6,7 @@ if (!defined('TC_ROOT')) {
     define('TC_ROOT', dirname(__DIR__));
 }
 
-define('TC_VERSION', '2.0.155');
+define('TC_VERSION', '2.0.156');
 // 单篇笔记正文上限(字符)。超出时接口明确报错而不是静默截断。
 define('TC_NOTE_MAX_CHARS', 500000);
 // 敏感词库上限(去重后的条数)。达到上限后新增词条被丢弃,单个词条本身不截断。
@@ -1240,6 +1240,14 @@ function tc_model_group_media_kind($group, $candidates) {
 //   2) 已经没有重复的 auto 组 → 删掉(手工组一律不动);
 //   3) 已存在的 auto 组只补 matchId,不动管理员改过的策略/顺序/显示名/扣费。
 // 返回 array(added, removed, kept)。可重复调用。
+//
+// 只统计「平台渠道」(scope=global,即管理员在后台添加的)。用户在前台自己添加的渠道
+// 是他个人的配置,不是平台提供的资源:
+//   · 把它算进成员,汇总 ID 就变成了「管理员提供的 + 某人私有的」混合体,而汇总组是全局的 ——
+//     A 用户那条私有渠道一旦停用/删除,全体用户的汇总 ID 就跟着少一个成员;
+//   · 更要紧的是计数:某人自建一条与平台同名的渠道,就能把「只有 1 个平台成员」的模型
+//     顶成 ≥2 从而凭空造出一条全局汇总组,而该组对其它用户只有一个真实成员。
+// 用户自己添加的模型照旧直接出现在他自己的模型列表里(不汇总,也不与平台同名渠道互相顶替)。
 function tc_model_groups_sync_auto(&$db, $minProviders = 2) {
     if (!isset($db['modelGroups']) || !is_array($db['modelGroups'])) $db['modelGroups'] = array();
     // 统计每个模型名出现在多少个「启用中的」渠道。停用渠道前台根本看不到,
@@ -1249,6 +1257,8 @@ function tc_model_groups_sync_auto(&$db, $minProviders = 2) {
     $display = array();
     foreach ((isset($db['providers']) ? $db['providers'] : array()) as $p) {
         if (!is_array($p) || !isset($p['id'])) continue;
+        // 只统计平台渠道(管理员添加的全局渠道);用户自建渠道不参与汇总,理由见函数头注释。
+        if (!(isset($p['scope']) && $p['scope'] === 'global')) continue;
         // 只统计启用中的渠道。core.php 不依赖 api.php 的 tc_provider_enabled,这里内联同一判定。
         if (isset($p['enabled']) && empty($p['enabled'])) continue;
         foreach ((isset($p['models']) ? $p['models'] : array()) as $m) {
