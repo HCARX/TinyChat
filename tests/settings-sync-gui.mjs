@@ -159,11 +159,27 @@ check('设备 A 字号已改为 18', localA.fontSize === 18);
 check('设备 A 自定义字体已登记', localA.font);
 check('设备 A 侧栏宽度已记录', Number(localA.width) > 0);
 
-// 等推送落地(防抖 1.2s)
+// 模型引用型偏好:值形如 "providerId\nmodelId"(换行分段)。服务端清洗曾经把它当普通短文本,
+// 换行按控制字符剥掉 → "prov-syncmock-model",新设备既找不到供应商也找不到模型,该偏好静默失效。
+// 这里走真实云同步链路(prefs.judgeModel + ui.imageModel)验一遍换行是否活着往返。
+const MODEL_REF = 'prov-sync\nmock-model';
+await A.page.evaluate((ref) => {
+  window.OCUI.setPref('judgeModel', ref);
+  window.OCSettingsSync.setUi('imageModel', ref);
+}, MODEL_REF);
+const localRef = await A.page.evaluate(() => ({
+  pref: window.OCUI.getPref('judgeModel'),
+  ui: localStorage.getItem('oc_image_model'),
+}));
+check('设备 A 模型引用本地即带换行', localRef.pref === MODEL_REF && localRef.ui === MODEL_REF);
+
+// 等推送落地(防抖 1.2s);独自等 judgeModel 到位,避免主题那次推送先落地让断言读到旧值
 let pushed = null;
 for (let i = 0; i < 40; i++) {
   const s = await serverSettings();
-  if (s.settings && s.settings.prefs && s.settings.prefs.theme === 'dark') { pushed = s; break; }
+  const sp = (s.settings && s.settings.prefs) || {};
+  const su = (s.settings && s.settings.ui) || {};
+  if (sp.theme === 'dark' && sp.judgeModel && su.imageModel) { pushed = s; break; }
   await sleep(300);
 }
 check('设置已推送到云端(主题)', !!pushed);
@@ -174,6 +190,8 @@ if (pushed) {
   check('云端记录了侧栏宽度', Number((pushed.settings.ui || {}).sidebarWidth) > 0);
   check('云端记录了逐键时间戳', Number(pushed.settings.at['prefs.theme']) > 0);
   check('云端修订号已递增', Number(pushed.revision) > 0);
+  check('云端偏好:模型引用保留换行', pushed.settings.prefs.judgeModel === MODEL_REF);
+  check('云端界面:模型引用保留换行', pushed.settings.ui.imageModel === MODEL_REF);
 }
 const revAfterPush = Number((await serverSettings()).revision) || 0;
 await sleep(2500);
@@ -191,6 +209,8 @@ const remote = await B.page.evaluate(() => ({
   font: !!(window.OCUI.getCustomFonts() || {})['云同步测试字体'],
   group: (window.OCGroup.groups() || []).some((g) => g.name === '云同步测试群'),
   panelFontSize: (document.getElementById('pref-fontsize') || {}).value,
+  modelRef: window.OCUI.getPref('judgeModel'),
+  imageModelRef: localStorage.getItem('oc_image_model'),
 }));
 check('新设备主题自动恢复为深色', remote.theme === 'dark');
 check('新设备字号自动恢复为 18', remote.fontSize === 18);
@@ -198,6 +218,10 @@ check('新设备自定义字体自动恢复', remote.font);
 check('新设备群聊配置自动恢复', remote.group);
 check('新设备侧栏宽度自动恢复', String(remote.width) === String(localA.width));
 check('设置面板回显已同步的字号', String(remote.panelFontSize) === '18');
+// 这是本用例的核心:模型引用的换行分隔符必须活着跨设备,否则新设备拿到 "prov-syncmock-model",
+// 解析出的供应商/模型都失效,用户会看到「设置明明同步了却用了个不存在的模型」。
+check('新设备模型引用(偏好)带换行恢复', remote.modelRef === MODEL_REF);
+check('新设备模型引用(界面)带换行恢复', remote.imageModelRef === MODEL_REF);
 
 console.log('\n== 3. 新设备不应把云端值当成自己的改动再推回去 ==');
 await sleep(1500); // 首次登录后可能有一次正常推送(如上次使用的模型),先让它落地

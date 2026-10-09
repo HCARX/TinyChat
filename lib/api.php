@@ -6326,6 +6326,23 @@ function tc_settings_text($v, $max) {
     return tc_utf_cut((string) $s, $max);
 }
 
+// 模型引用偏好(imageModel / videoModel / judgeModel 等):值形如 "providerId\nmodelId"。
+// 这类值不能走 tc_settings_text —— 它把换行当控制字符一并剔除,两段会被粘成
+// "providerIdmodelId",跨设备同步回来既找不到供应商也找不到模型,该偏好静默失效
+// (本机不经清洗,所以只有换设备才暴露)。这里保留换行分隔符,其余控制字符照旧剔除;
+// 顺带归一化为「供应商 + 模型」至多两段(去空段、去首尾空白),避免脏值塞进多余换行。
+function tc_settings_model_ref($v, $max) {
+    $s = preg_replace('/[\x00-\x09\x0b-\x1f\x7f]/', '', (string) $v); // 保留 \n(\x0a)
+    $parts = array();
+    foreach (explode("\n", $s) as $p) {
+        $p = trim($p);
+        if ($p !== '') $parts[] = $p;
+    }
+    if (count($parts) >= 2) $s = $parts[0] . "\n" . implode("\n", array_slice($parts, 1));
+    else $s = count($parts) ? $parts[0] : '';
+    return tc_utf_cut($s, $max);
+}
+
 // 偏好表:已知键按类型/范围收敛,未知键只接受标量(短字符串/有限数字/布尔),其余丢弃
 function tc_settings_prefs($raw) {
     $out = array();
@@ -6338,9 +6355,11 @@ function tc_settings_prefs($raw) {
         'autoImageMode' => array('off', 'rough', 'auto'),
     );
     $ints = array('contextMessages' => array(2, 500), 'fontSize' => array(11, 22));
+    // 模型引用型偏好:值形如 "providerId\nmodelId",必须走保留换行的清洗(见 tc_settings_model_ref)。
+    // 不能落进下面的 $strs,否则换行被当控制字符剔除,跨设备同步后该偏好失效。
+    $modelRefs = array('followupsModel' => 200, 'judgeModel' => 200, 'imageModel' => 200, 'notesModel' => 200);
     $strs = array(
         'lastProviderId' => 64, 'lastModel' => 200, 'pinnedProviderId' => 64, 'pinnedModel' => 200,
-        'followupsModel' => 200, 'judgeModel' => 200, 'imageModel' => 200, 'notesModel' => 200,
         'fontFamily' => 80, 'fontCjk' => 80, 'fontLatin' => 80, 'accent' => 16,
         // 主题市场的主题包 id(见 static/js/theme-boot.js 的 OC_THEME_PACKS)。
         // 只存 id 不存样式:样式表随发布包分发,存 id 才能让主题更新跟着版本走。
@@ -6368,6 +6387,11 @@ function tc_settings_prefs($raw) {
             $out[$k] = tc_settings_text($v, $strs[$k]);
             continue;
         }
+        if (isset($modelRefs[$k])) {
+            if (!is_scalar($v)) continue;
+            $out[$k] = tc_settings_model_ref($v, $modelRefs[$k]);
+            continue;
+        }
         // 未知键(后续版本新增的偏好):只收标量,避免任意结构落库
         if (is_bool($v) || $v === null) { $out[$k] = $v; continue; }
         if (is_int($v) || is_float($v)) { if (is_finite((float) $v)) $out[$k] = $v; continue; }
@@ -6393,7 +6417,9 @@ function tc_settings_ui($raw) {
     // 用 float 而不是 int:61.8 不能被截成 61。
     $floats = array('contentWidth' => array(50, 2400));
     $enums = array('composerMode' => array('simple', 'group'));
-    $strs = array('imageModel' => 200, 'imageSize' => 64, 'videoModel' => 200, 'videoRatio' => 32);
+    // 模型引用型:值形如 "providerId\nmodelId",必须保留换行(见 tc_settings_model_ref)。
+    $modelRefs = array('imageModel' => 200, 'videoModel' => 200);
+    $strs = array('imageSize' => 64, 'videoRatio' => 32);
     foreach ($raw as $k => $v) {
         $k = (string) $k;
         if (in_array($k, $bools, true)) { $out[$k] = !empty($v); continue; }
@@ -6416,6 +6442,10 @@ function tc_settings_ui($raw) {
         }
         if (isset($strs[$k])) {
             if (is_scalar($v)) $out[$k] = tc_settings_text($v, $strs[$k]);
+            continue;
+        }
+        if (isset($modelRefs[$k])) {
+            if (is_scalar($v)) $out[$k] = tc_settings_model_ref($v, $modelRefs[$k]);
             continue;
         }
         if ($k === 'chatGroupCollapsed') {

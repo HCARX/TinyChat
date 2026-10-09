@@ -57,11 +57,18 @@ $doc = tc_sanitize_user_settings(array(
         'evil' => array('nested' => 1),      // 未知键且非标量 → 丢弃
         'futureFlag' => true,                // 未知标量 → 保留(向前兼容新偏好)
         'futureText' => 'ok',
+        // 模型引用型偏好:值形如 "providerId\nmodelId"。曾经落进普通短文本清洗,
+        // 换行被当控制字符剥掉 → "prov1m1",跨设备同步后既找不到供应商也找不到模型。
+        'judgeModel' => "prov1\nm1",
+        'followupsModel' => "  prov2 \n m2  ", // 顺带归一化:去空段/首尾空白,保留换行
+        'notesModel' => "prov3\x0bm3\n",       // \x0b 是控制字符(剔除),末尾空段丢弃
     ),
     'ui' => array(
         'sidebarWidth' => 5000,             // 收敛到 1200
         'contentWidth' => 61.8,             // 百分比,必须原样保留(不能被旧的 px 区间夹成 400)
         'composerMode' => 'group',
+        'imageModel' => "provA\nmodel-a",   // 模型引用型:同样必须保住换行分隔符
+        'videoModel' => "provB\nmodel-b",
         'composerModeBad' => 'x',
         'notesAiCfg' => array(
             'disabled' => array('translate'),
@@ -113,6 +120,18 @@ $eq('对话列宽度保留 upgrade 前的 px 旧值', tc_settings_ui(array('cont
 $eq('对话列宽度超上限收敛', tc_settings_ui(array('contentWidth' => 99999))['contentWidth'], 2400);
 $eq('对话列宽度低于下限收敛', tc_settings_ui(array('contentWidth' => 10))['contentWidth'], 50);
 $eq('枚举值保留', $doc['ui']['composerMode'], 'group');
+// 模型引用型偏好:换行分隔符必须活着穿过服务端清洗(否则跨设备同步后 silently 失效)
+$eq('偏好:模型引用保留换行', $doc['prefs']['judgeModel'], "prov1\nm1");
+$eq('偏好:模型引用去空白/空段后仍为两段', $doc['prefs']['followupsModel'], "prov2\nm2");
+$eq('偏好:模型引用剔除控制字符但保住换行', $doc['prefs']['notesModel'], "prov3m3");
+$eq('界面:生图模型引用保留换行', $doc['ui']['imageModel'], "provA\nmodel-a");
+$eq('界面:生视频模型引用保留换行', $doc['ui']['videoModel'], "provB\nmodel-b");
+// 直接对清洗函数下探:普通短文本仍必须剔除换行(别为了模型引用把全局行为放松了)
+$eq('普通短文本仍剔除换行(未被模型引用规则波及)', tc_settings_text("a\nb", 200), 'ab');
+$eq('模型引用清洗保留换行', tc_settings_model_ref("a\nb", 200), "a\nb");
+$eq('模型引用清洗去首尾空白', tc_settings_model_ref("  a \n b  ", 200), "a\nb");
+$eq('模型引用清洗丢空段', tc_settings_model_ref("a\n\n\nb", 200), "a\nb");
+$eq('模型引用清洗空值仍为空', tc_settings_model_ref("  \n  ", 200), '');
 $eq('未在白名单的 UI 键丢弃', array_key_exists('composerModeBad', $doc['ui']), false);
 $eq('笔记动作配置保留', $doc['ui']['notesAiCfg']['custom'][0]['key'], 'k1');
 $eq('折叠状态保留', $doc['ui']['chatGroupCollapsed']['今天'], false);
