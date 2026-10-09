@@ -4110,9 +4110,24 @@ async function saveThinking(deletedAutoIds) {
 // ============ 版本更新 ============
 let UPDATE_DATA = null;
 
+// 把发布说明(Markdown)渲染进容器。与后台其它 Markdown 视图复用同一个渲染器
+// (OCRenderer.renderInto,内部经 DOMPurify 消毒);渲染器不可用时回退纯文本,
+// 不会因为一个渲染失败让整块发布说明消失。空说明给出占位文案。
+function renderUpdateNotes(el, text) {
+  if (!el) return;
+  const src = String(text || '').trim();
+  if (!src) { el.textContent = '（无发布说明）'; return; }
+  if (window.OCRenderer && OCRenderer.renderInto) {
+    try { OCRenderer.renderInto(el, src); return; } catch (e) { /* 回退纯文本 */ }
+  }
+  el.textContent = src;
+}
+
 function renderUpdate() {
   const d = UPDATE_DATA;
   if (!d) return;
+  const autoEl = $('upd-auto');
+  if (autoEl) autoEl.checked = d.autoUpdate !== false;
   $('upd-current').textContent = 'v' + (d.current || '-');
   $('upd-cached').textContent = d.cached ? '（缓存于 ' + fmtTime(d.checkedAt) + '，点「检查更新」立即刷新）' : '';
   const latest = d.latest || {};
@@ -4123,8 +4138,9 @@ function renderUpdate() {
     res.classList.remove('hidden');
     $('upd-latest').textContent = 'v' + (latest.version || '?');
     $('upd-published').textContent = latest.publishedAt ? '发布于 ' + fmtTime(latest.publishedAt) : '';
-    $('upd-notes').textContent = latest.notes || '（无发布说明）';
-    $('upd-notes').hidden = !latest.notes;
+    // 发布说明来自 GitHub Release 的 body,是 Markdown。交给全站同一套渲染器(经 DOMPurify
+    // 消毒)渲染成富文本,而不是塞进 <pre> 里显示一堆 # 和 *。
+    renderUpdateNotes($('upd-notes'), latest.notes || '');
     const link = $('upd-link');
     link.hidden = !latest.url;
     if (latest.url) link.href = latest.url;
@@ -4137,6 +4153,58 @@ function renderUpdate() {
   $('upd-last').textContent = last
     ? '上次在线更新：v' + last.from + ' → v' + last.to + '（' + fmtTime(last.at) + '）。更新前程序备份在 data/update/backup/。'
     : '';
+}
+
+// 「自动更新」开关:默认开启。开启后打开面板时若发现新版本就自动执行更新
+// (与「一键更新」同一条流程,含备份/校验/加锁);关闭后仅提示,需手动点击。
+let AUTO_UPDATE_ARMED = false;   // 已自动更新过一次,避免刷新后反复触发
+let AUTO_UPDATE_RUNNING = false; // 正在自动更新:防止重复发起
+
+async function saveAutoUpdate(enabled) {
+  try {
+    const r = await api('/api/admin/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ autoUpdate: !!enabled }),
+    });
+    const d = await r.json();
+    if (!r.ok) { toast((d.error && d.error.message) || '保存失败', true); return; }
+    toast(enabled ? '已开启自动更新' : '已关闭自动更新');
+  } catch (e) { toast('保存失败: ' + e.message, true); }
+}
+
+// 检查完成后决定是否自动更新:仅在「自动更新开启 + 发现新版本 + 本次未自动跑过」时触发。
+// 只在首次进入面板(非用户手动点「检查更新」)时调用,手动检查不自动更新,避免用户
+// 点「检查」却被立刻升级。
+async function maybeAutoUpdate() {
+  const d = UPDATE_DATA;
+  if (!d || !d.hasUpdate) return;
+  if (d.autoUpdate === false) return;
+  if (AUTO_UPDATE_ARMED || AUTO_UPDATE_RUNNING) return;
+  const latest = d.latest || {};
+  if (!latest.version || !latest.tagName) return;
+  AUTO_UPDATE_ARMED = true;
+  AUTO_UPDATE_RUNNING = true;
+  $('upd-status').textContent = '已开启自动更新，正在更新到 v' + latest.version + '…请勿关闭页面。';
+  const btn = $('upd-apply');
+  if (btn) btn.disabled = true;
+  try {
+    const r = await api('/api/admin/update/perform', { method: 'POST' });
+    const res = await r.json();
+    if (!r.ok) {
+      const msg = (res.error && res.error.message) ? res.error.message : ('HTTP ' + r.status);
+      $('upd-status').textContent = '自动更新失败：' + msg + '。可在下方点「一键更新」重试。';
+      if (btn) btn.disabled = false;
+      return;
+    }
+    $('upd-status').textContent = '已自动更新到 v' + res.to + '，页面将在 3 秒后刷新…';
+    setTimeout(() => location.reload(), 3000);
+  } catch (e) {
+    $('upd-status').textContent = '自动更新失败：' + e.message + '。可在下方点「一键更新」重试。';
+    if (btn) btn.disabled = false;
+  } finally {
+    AUTO_UPDATE_RUNNING = false;
+  }
 }
 
 async function checkUpdate(force) {
@@ -4189,6 +4257,8 @@ async function loadUpdatePanel() {
   $('upd-last').textContent = '';
   $('upd-result').classList.add('hidden');
   await checkUpdate(false);
+  // 面板打开后才尝试自动更新(手动点「检查更新」不会触发,避免用户一按就被升级)。
+  await maybeAutoUpdate();
 }
 
 (function bindUpdatePanel() {
@@ -4196,6 +4266,8 @@ async function loadUpdatePanel() {
   if (!check) return;
   check.addEventListener('click', () => checkUpdate(true));
   $('upd-apply').addEventListener('click', performUpdate);
+  const auto = $('upd-auto');
+  if (auto) auto.addEventListener('change', () => saveAutoUpdate(auto.checked));
 })();
 
 // ============ 页签切换(懒加载) ============

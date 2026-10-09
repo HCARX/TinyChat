@@ -3908,12 +3908,18 @@ function tc_api_admin_save_settings() {
 // ---- 在线更新(逻辑在 lib/updater.php)----
 function tc_api_admin_update_check() {
     $q = tc_query();
-    tc_with_db(false, function ($db) { tc_require_admin($db); });
+    // 顺带带回「自动更新」开关:面板据它决定「发现新版本时是否自动执行一键更新」。
+    $auto = true;
+    tc_with_db(false, function ($db) use (&$auto) {
+        tc_require_admin($db);
+        $auto = !array_key_exists('autoUpdate', $db['settings']) || !empty($db['settings']['autoUpdate']);
+    });
     try {
         $result = tc_update_check(!empty($q['force']));
     } catch (Exception $e) {
         tc_fail(400, '检查更新时出错：' . $e->getMessage());
     }
+    $result['autoUpdate'] = $auto;
     tc_json(200, $result);
 }
 

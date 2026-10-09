@@ -453,11 +453,36 @@ function modelIsVideo(modelId) {
   }
   return hint(id);
 }
-// 当前供应商下被判定为视频生成的模型
-function videoModelsOfCurrentProvider() {
-  const p = (state.providers || []).find((x) => x.id === state.currentProviderId);
-  if (!p || !Array.isArray(p.models)) return [];
-  return p.models.filter((m) => m && m.id && modelIsVideo(m.id));
+// 全站可用的生视频模型(跨供应商)。生视频入口只在「任意供应商有视频模型」时出现,
+// 若下拉只列当前供应商的模型,用户在当前供应商没有视频模型时点开就是空白 ——
+// 所以这里汇总全部供应商,value 用 "providerId\nmodelId",生成时按它决定走哪个供应商。
+function allVideoModels() {
+  const out = [];
+  (state.providers || []).forEach((p) => {
+    (p.models || []).forEach((m) => {
+      if (!m || !m.id) return;
+      const id = String(m.id);
+      if (!modelIsVideo(id)) return;
+      out.push({
+        providerId: p.id, modelId: id, value: p.id + '\n' + id,
+        label: p.agg ? (m.name || id) : ((p.name || p.id) + '@' + (m.name || id)),
+        search: (p.name || '') + ' ' + id + ' ' + (m.name || ''),
+      });
+    });
+  });
+  return out;
+}
+// 在生图/生视频候选里挑默认项:优先按「上次使用的模型 ID」匹配,同 ID 时优先当前供应商;
+// 都匹配不到就取当前供应商的第一条,再退整体第一条。返回候选对象(value 形如 "providerId\nmodelId")。
+function pickMediaModel(list, lastModelId, preferProviderId) {
+  const arr = Array.isArray(list) ? list : [];
+  if (!arr.length) return null;
+  const id = String(lastModelId || '');
+  if (id) {
+    const same = arr.filter((m) => m.modelId === id);
+    if (same.length) return same.find((m) => m.providerId === preferProviderId) || same[0];
+  }
+  return arr.find((m) => m.providerId === preferProviderId) || arr[0];
 }
 function videoModelLogo() {
   return (window.OC && OC.videoLogo) ? OC.videoLogo() : 'static/logo/video-camera.svg';
@@ -2321,6 +2346,7 @@ function syncComposerTools() {
   const vidTool = $('composer-tool-video');
   if (imgTool) imgTool.classList.toggle('hidden', !hasAnyImageModel());
   if (vidTool) vidTool.classList.toggle('hidden', !hasAnyVideoModel());
+  syncMediaModelPickers();
 }
 function renderProviderLabel() {
   const p = state.providers.find((x) => x.id === state.currentProviderId);
@@ -4771,14 +4797,73 @@ function bindImageModelSelect(id, prefKey) {
   box.addEventListener('click', open);
   box.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
 }
-// 全站可用的生图模型 [{providerId, modelId, value, label}]（后台「默认生图模型」与自动改走生图都用到）
+// 「≡」菜单里生图/生视频行右侧的模型下拉:候选来自全站可用模型(跨供应商)。
+// 与弹窗内下拉、设置里的「默认生图模型」共用同一份偏好(imageModel / videoModel),
+// 选中即写偏好(经云同步),未选中时展示自动挑出的模型,让用户一眼看到会用哪个。
+function mediaModelCandidates(prefKey) {
+  return (prefKey === 'videoModel') ? allVideoModels() : allImageModels();
+}
+function lastUsedMediaModel(prefKey) {
+  const key = (prefKey === 'videoModel') ? 'oc_video_model' : 'oc_image_model';
+  try { return localStorage.getItem(key) || ''; } catch (e) { return ''; }
+}
+// 解析当前应显示的媒体模型(显式偏好 > 上次使用 > 当前供应商第一个),并写回下拉
+function syncMediaModelPicker(id, prefKey) {
+  const box = $(id);
+  if (!box) return;
+  const list = mediaModelCandidates(prefKey);
+  const lab = box.querySelector('.sb-label');
+  if (!list.length) {
+    box.setAttribute('data-value', '');
+    if (lab) lab.textContent = prefKey === 'videoModel' ? '生成视频' : '生成图片';
+    return;
+  }
+  const rawPref = String(uiPref(prefKey, '') || '');
+  const chosen = (rawPref && list.some((m) => m.value === rawPref))
+    ? list.find((m) => m.value === rawPref)
+    : pickMediaModel(list, lastUsedMediaModel(prefKey), state.currentProviderId);
+  box.setAttribute('data-value', chosen ? chosen.value : '');
+  if (lab) lab.textContent = (chosen && chosen.label) || '选择模型';
+}
+function bindMediaModelPicker(id, prefKey) {
+  const box = $(id);
+  if (!box || !window.OC || !OC.openSelect) return;
+  const open = () => {
+    const items = mediaModelCandidates(prefKey).map((m) => ({ value: m.value, label: m.label, search: m.search }));
+    if (!items.length) { toast('暂无可用模型', true); return; }
+    OC.openSelect(box, items, {
+      selected: box.getAttribute('data-value') || '',
+      searchable: items.length > 8,
+      fitWidth: true,
+      onSelect: (val, item) => {
+        // 写偏好即可:ui.js 的变更订阅会记时间戳并触发设置云同步。
+        if (window.OCUI && window.OCUI.setPref) window.OCUI.setPref(prefKey, val);
+        box.setAttribute('data-value', val);
+        const lab = box.querySelector('.sb-label');
+        if (lab) lab.textContent = (item && item.label) || val;
+      },
+    });
+  };
+  box.addEventListener('click', open);
+  box.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
+  syncMediaModelPicker(id, prefKey);
+}
+// 供应商/模型列表变化后刷新两个媒体下拉的展示(含自动挑出的默认项)
+function syncMediaModelPickers() {
+  syncMediaModelPicker('composer-image-model', 'imageModel');
+  syncMediaModelPicker('composer-video-model', 'videoModel');
+}
 function allImageModels() {
   const out = [];
   (state.providers || []).forEach((p) => {
     (p.models || []).forEach((m) => {
       if (!m || !m.id) return;
       if (!modelIsImage(m.id)) return;
-      out.push({ providerId: p.id, modelId: String(m.id), value: p.id + '\n' + m.id, label: p.agg ? (m.name || m.id) : ((p.name || p.id) + '@' + (m.name || m.id)) });
+      out.push({
+        providerId: p.id, modelId: String(m.id), value: p.id + '\n' + m.id,
+        label: p.agg ? (m.name || m.id) : ((p.name || p.id) + '@' + (m.name || m.id)),
+        search: (p.name || '') + ' ' + m.id + ' ' + (m.name || ''),
+      });
     });
   });
   return out;
@@ -6895,20 +6980,23 @@ async function ingestFiles(files, opts) {
       closeTools();
       openCompareDialog();
     });
-    const imageTool = $('composer-tool-image');
-    if (imageTool) imageTool.addEventListener('click', (e) => {
+    const imageGo = $('composer-tool-image-go');
+    if (imageGo) imageGo.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
       closeTools();
       openImageDialog();
     });
-    const videoTool = $('composer-tool-video');
-    if (videoTool) videoTool.addEventListener('click', (e) => {
+    const videoGo = $('composer-tool-video-go');
+    if (videoGo) videoGo.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
       closeTools();
       openVideoDialog();
     });
+    // 生图/生视频行里的模型下拉:候选来自全站可用模型,选中即记住(与弹窗内下拉同一份偏好)。
+    bindMediaModelPicker('composer-image-model', 'imageModel');
+    bindMediaModelPicker('composer-video-model', 'videoModel');
   }
 })();
 
@@ -6988,12 +7076,6 @@ async function ingestFiles(files, opts) {
 })();
 
 // ============ 图像生成 ============
-// 当前供应商下被判定为生图的模型:显式 image 标记优先,否则按模型名启发式判断
-function imageModelsOfCurrentProvider() {
-  const p = (state.providers || []).find((x) => x.id === state.currentProviderId);
-  if (!p || !Array.isArray(p.models)) return [];
-  return p.models.filter((m) => m && m.id && modelIsImage(m.id));
-}
 // 在动态弹窗里挂一个自定义下拉,替代原生 <select>:样式与全站统一,且支持搜索。
 function bindModalSelect(box, getItems, onSelect) {
   if (!box || !window.OC || !OC.openSelect) return;
@@ -7027,27 +7109,34 @@ function selectBoxHtml(id, label, value) {
 
 function openImageDialog() {
   if (state.streaming) { toast('正在生成中，请稍候', true); return; }
-  if (!state.currentProviderId) { toast('请先在顶部选择供应商', true); return; }
   if (document.querySelector('.img-modal')) return; // 已打开时不重复弹出
   const lastModel = localStorage.getItem('oc_image_model') || '';
   // 常用尺寸快捷项;具体规格可在下方输入框自定义(像素 1024x1024 / 档位 2K / 宽高比 16:9)
   const IMG_SIZE_PRESETS = ['1024x1024', '1792x1024', '1024x1792', '512x512', '2K', '4K', '16:9', '9:16'];
   const storedSize = (localStorage.getItem('oc_image_size') || '').trim();
   const lastSize = storedSize || IMG_SIZE_PRESETS[0];
-  // 当前供应商里可用的生图模型(显式标记优先,其次按模型名判断)
-  const imageModels = imageModelsOfCurrentProvider();
+  // 可用生图模型:跨供应商汇总。生图入口在「任意供应商有生图模型」时就会出现,
+  // 若下拉只列当前供应商的模型,当前供应商恰好没有生图模型时点开就是一片空白。
+  // 默认项优先级:用户设置的「默认生图模型」 > 上次使用(同 ID 优先当前供应商) > 当前供应商第一个。
+  const imageModels = allImageModels();
   const hasModelList = imageModels.length > 0;
-  // 默认模型优先级:用户设置的「默认生图模型」(若在本供应商) > 上次使用 > 第一个
-  const prefImg = defaultImageModel();
-  const prefModelHere = (prefImg && prefImg.providerId === state.currentProviderId && imageModels.some((m) => m.id === prefImg.modelId)) ? prefImg.modelId : '';
-  const defaultModel = prefModelHere
-    || (imageModels.some((m) => m.id === lastModel) ? lastModel : (imageModels[0] ? imageModels[0].id : ''));
+  // 一个生图模型都没有时才需要手填模型 ID,此时必须先有当前供应商才能路由。
+  if (!hasModelList && !state.currentProviderId) { toast('请先在顶部选择供应商', true); return; }
+  // 默认项优先级:用户显式设置的「默认生图模型」 > 上次使用(同 ID 优先当前供应商) > 当前供应商第一个。
+  // 注意不能直接用 defaultImageModel():它在没有显式设置时会回退到第一个模型,
+  // 那样「上次使用」这条就永远轮不到,用户改过的模型每次开弹窗又被打回第一个。
+  const prefRaw = String(uiPref('imageModel', '') || '');
+  const prefValue = (prefRaw && imageModels.some((m) => m.value === prefRaw)) ? prefRaw : '';
+  const pickedItem = prefValue
+    ? imageModels.find((m) => m.value === prefValue)
+    : pickMediaModel(imageModels, lastModel, state.currentProviderId);
+  const defaultModel = (pickedItem && pickedItem.modelId) || lastModel;
 
   const mask = document.createElement('div');
   mask.className = 'modal-mask';
   const iconHtml = (window.OC && OC.logoImg) ? OC.logoImg(imageModelLogo(), 'img-dialog-logo') : '';
   const modelBlock = hasModelList
-    ? '<div class="field"><span>图像模型</span>' + selectBoxHtml('img-model-box', '选择生图模型', defaultModel) + '</div>'
+    ? '<div class="field"><span>图像模型</span>' + selectBoxHtml('img-model-box', (pickedItem && pickedItem.label) || '选择生图模型', (pickedItem && pickedItem.value) || defaultModel) + '</div>'
       + '<label class="field" id="img-model-custom-row" style="display:none"><span>模型 ID</span>'
       + '<input id="img-model" placeholder="手动输入模型 ID" autocomplete="off"></label>'
     : '<div class="field"><span>图像模型</span>'
@@ -7100,7 +7189,7 @@ function openImageDialog() {
     if (custom) { const inp = mask.querySelector('#img-model'); if (inp) inp.focus(); }
   };
   if (modelBox) {
-    const items = imageModels.map((m) => ({ value: m.id, label: m.name || m.id }))
+    const items = imageModels.map((m) => ({ value: m.value, label: m.label, search: m.search }))
       .concat([{ value: '__custom__', label: '其他（手动输入）' }]);
     bindModalSelect(modelBox, items, () => syncCustom());
     syncCustom();
@@ -7121,12 +7210,18 @@ function openImageDialog() {
       label.textContent = v || '选择预设';
     });
   }
+  // 读取所选模型:下拉返回的是 "providerId\nmodelId"(可能属于别的供应商),
+  // 手动输入则没有供应商前缀,回退到当前供应商。返回 { providerId, model } 供请求使用。
   const readImageModel = () => {
     if (modelBox) {
       const v = modelBox.getAttribute('data-value') || '';
-      if (v && v !== '__custom__') return v;
+      if (v && v !== '__custom__') {
+        const parts = v.split('\n');
+        return { providerId: parts[0], model: parts.slice(1).join('\n') };
+      }
     }
-    return (mask.querySelector('#img-model') && mask.querySelector('#img-model').value.trim()) || '';
+    const m = (mask.querySelector('#img-model') && mask.querySelector('#img-model').value.trim()) || '';
+    return { providerId: '', model: m };
   };
   const readSize = () => {
     const typed = sizeInput ? sizeInput.value.trim() : '';
@@ -7167,7 +7262,9 @@ function openImageDialog() {
   const run = mask.querySelector('#img-run');
   run.addEventListener('click', async () => {
     const prompt = (mask.querySelector('#img-prompt') && mask.querySelector('#img-prompt').value.trim()) || '';
-    const model = readImageModel();
+    const sel = readImageModel();
+    const model = sel.model;
+    const providerId = sel.providerId || state.currentProviderId;
     const spec = parseImageSpec(readSize());
     const status = mask.querySelector('#img-status');
     if (!prompt) return toast('请输入提示词', true);
@@ -7183,7 +7280,7 @@ function openImageDialog() {
       const r = await api('/api/proxy/images', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ providerId: state.currentProviderId, model, prompt, size: spec.size, ratio: spec.ratio, n: 1, images: imgRefs.slice() }),
+        body: JSON.stringify({ providerId, model, prompt, size: spec.size, ratio: spec.ratio, n: 1, images: imgRefs.slice() }),
       });
       const d = await r.json();
       if (!r.ok) throw new Error((d.error && d.error.message) || ('HTTP ' + r.status));
@@ -7210,12 +7307,20 @@ function openImageDialog() {
 // 后端建任务并轮询到出片,结果插入当前对话。
 function openVideoDialog() {
   if (state.streaming) { toast('正在生成中，请稍候', true); return; }
-  if (!state.currentProviderId) { toast('请先在顶部选择供应商', true); return; }
   if (document.querySelector('.vid-modal')) return;
-  const videoModels = videoModelsOfCurrentProvider();
+  // 视频模型跨供应商汇总:用户点「生视频」时,当前对话供应商未必有视频模型,
+  // 下拉要列出全站可用的视频模型,并在生成时按所选模型的供应商路由。
+  const videoModels = allVideoModels();
+  if (!videoModels.length) { toast('暂无可用的视频模型', true); return; }
   const lastModel = localStorage.getItem('oc_video_model') || '';
   const hasModelList = videoModels.length > 0;
-  const defaultModel = videoModels.some((m) => m.id === lastModel) ? lastModel : (videoModels[0] ? videoModels[0].id : '');
+  // 默认项优先级:用户显式设置的「默认生视频模型」(来自「≡」菜单里的下拉/云同步)
+  // > 上次使用(同 ID 优先当前供应商) > 当前供应商第一个。
+  const videoPrefRaw = String(uiPref('videoModel', '') || '');
+  const pickedItem = (videoPrefRaw && videoModels.some((m) => m.value === videoPrefRaw))
+    ? videoModels.find((m) => m.value === videoPrefRaw)
+    : pickMediaModel(videoModels, lastModel, state.currentProviderId);
+  const defaultModel = (pickedItem && pickedItem.modelId) || lastModel;
   const spec = parseVideoSpec();
   const SECONDS = ['4', '5', '6', '8', '10', '12'];
 
@@ -7223,7 +7328,7 @@ function openVideoDialog() {
   mask.className = 'modal-mask';
   const iconHtml = (window.OC && OC.logoImg) ? OC.logoImg(videoModelLogo(), 'img-dialog-logo') : '';
   const modelBlock = hasModelList
-    ? '<div class="field"><span>视频模型</span>' + selectBoxHtml('vid-model-box', '选择视频模型', defaultModel) + '</div>'
+    ? '<div class="field"><span>视频模型</span>' + selectBoxHtml('vid-model-box', (pickedItem && pickedItem.label) || '选择视频模型', (pickedItem && pickedItem.value) || defaultModel) + '</div>'
       + '<label class="field" id="vid-model-custom-row" style="display:none"><span>模型 ID</span>'
       + '<input id="vid-model" placeholder="手动输入模型 ID" autocomplete="off"></label>'
     : '<div class="field"><span>视频模型</span>'
@@ -7301,7 +7406,7 @@ function openVideoDialog() {
     if (custom) { const inp = mask.querySelector('#vid-model'); if (inp) inp.focus(); }
   };
   if (modelBox) {
-    const items = videoModels.map((m) => ({ value: m.id, label: m.name || m.id }))
+    const items = videoModels.map((m) => ({ value: m.value, label: m.label, search: m.search }))
       .concat([{ value: '__custom__', label: '其他（手动输入）' }]);
     bindModalSelect(modelBox, items, () => syncCustom());
     syncCustom();
@@ -7310,12 +7415,18 @@ function openVideoDialog() {
   if (secBox) bindModalSelect(secBox, SECONDS.map((s) => ({ value: s, label: s + ' 秒' })));
   if (ratioBox) bindModalSelect(ratioBox, VIDEO_RATIOS.map((r) => ({ value: r, label: r })));
   syncMode('text');
+  // 读取所选模型:下拉值是 "providerId\nmodelId"(模型可能属于别的供应商),
+  // 手动输入没有前缀,回退到当前供应商。返回 { providerId, model } 供请求使用。
   const readVideoModel = () => {
     if (modelBox) {
       const v = modelBox.getAttribute('data-value') || '';
-      if (v && v !== '__custom__') return v;
+      if (v && v !== '__custom__') {
+        const parts = v.split('\n');
+        return { providerId: parts[0], model: parts.slice(1).join('\n') };
+      }
     }
-    return (mask.querySelector('#vid-model') && mask.querySelector('#vid-model').value.trim()) || '';
+    const m = (mask.querySelector('#vid-model') && mask.querySelector('#vid-model').value.trim()) || '';
+    return { providerId: '', model: m };
   };
   const readVal = (box, fallback) => (box && box.getAttribute('data-value')) || fallback;
 
@@ -7355,7 +7466,9 @@ function openVideoDialog() {
   const run = mask.querySelector('#vid-run');
   run.addEventListener('click', async () => {
     const prompt = (mask.querySelector('#vid-prompt') && mask.querySelector('#vid-prompt').value.trim()) || '';
-    const model = readVideoModel();
+    const sel = readVideoModel();
+    const model = sel.model;
+    const providerId = sel.providerId || state.currentProviderId;
     const mode = readVal(modeBox, 'text');
     const seconds = parseInt(readVal(secBox, '5'), 10) || 5;
     const ratio = readVal(ratioBox, '16:9');
@@ -7372,7 +7485,7 @@ function openVideoDialog() {
     run.disabled = true;
     status.textContent = '生成中，通常需要 1–5 分钟，请勿关闭页面…';
     try {
-      const payload = { providerId: state.currentProviderId, model, prompt, mode, seconds, aspect_ratio: ratio, n: 1 };
+      const payload = { providerId, model, prompt, mode, seconds, aspect_ratio: ratio, n: 1 };
       if (mode === 'reference') payload.images = refs.slice();
       if (mode === 'keyframe') {
         if (firstRef[0]) payload.first_frame = firstRef[0];

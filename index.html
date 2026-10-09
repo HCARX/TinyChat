@@ -25,24 +25,24 @@
 </script>
 <link rel="icon" type="image/svg+xml" href="./logo-icon.svg">
 <link rel="apple-touch-icon" href="./static/logo/app-icon-192.png">
-<link rel="stylesheet" href="./static/css/style.min.css?v=2.0.157">
-<link rel="stylesheet" href="./vendor/highlight/github.min.css?v=2.0.157" id="hljs-theme">
-<link rel="stylesheet" href="./vendor/katex/katex.min.css?v=2.0.157">
-<link rel="stylesheet" href="./static/css/enhanced.min.css?v=2.0.157">
-<link rel="stylesheet" href="./static/css/refine.min.css?v=2.0.157">
-<link rel="stylesheet" href="./static/css/redesign.min.css?v=2.0.157">
-<link rel="stylesheet" href="./static/css/polish.min.css?v=2.0.157">
-<link rel="stylesheet" href="./static/css/markdown.min.css?v=2.0.157">
-<link rel="stylesheet" href="./static/css/chrome.min.css?v=2.0.157">
-<link rel="stylesheet" href="./static/css/notes.min.css?v=2.0.157">
-<link rel="stylesheet" href="./static/css/im.min.css?v=2.0.157">
-<link rel="stylesheet" href="./static/css/web.min.css?v=2.0.157">
-<link rel="stylesheet" href="./static/css/toolbox.min.css?v=2.0.157">
-<link rel="stylesheet" href="./static/css/groupui.min.css?v=2.0.157">
-<script src="./static/js/theme-boot.min.js?v=2.0.157"></script>
+<link rel="stylesheet" href="./static/css/style.min.css?v=2.0.158">
+<link rel="stylesheet" href="./vendor/highlight/github.min.css?v=2.0.158" id="hljs-theme">
+<link rel="stylesheet" href="./vendor/katex/katex.min.css?v=2.0.158">
+<link rel="stylesheet" href="./static/css/enhanced.min.css?v=2.0.158">
+<link rel="stylesheet" href="./static/css/refine.min.css?v=2.0.158">
+<link rel="stylesheet" href="./static/css/redesign.min.css?v=2.0.158">
+<link rel="stylesheet" href="./static/css/polish.min.css?v=2.0.158">
+<link rel="stylesheet" href="./static/css/markdown.min.css?v=2.0.158">
+<link rel="stylesheet" href="./static/css/chrome.min.css?v=2.0.158">
+<link rel="stylesheet" href="./static/css/notes.min.css?v=2.0.158">
+<link rel="stylesheet" href="./static/css/im.min.css?v=2.0.158">
+<link rel="stylesheet" href="./static/css/web.min.css?v=2.0.158">
+<link rel="stylesheet" href="./static/css/toolbox.min.css?v=2.0.158">
+<link rel="stylesheet" href="./static/css/groupui.min.css?v=2.0.158">
+<script src="./static/js/theme-boot.min.js?v=2.0.158"></script>
 <!-- 性能门控:按后台设置决定是否加载渲染依赖(markdown-it 始终加载;KaTeX/highlight 可关)。
      必须在渲染依赖之前同步执行;具体的 <script> 标签由 perf.js 用 document.write 注入。 -->
-<script src="./static/js/perf.min.js?v=2.0.157"></script>
+<script src="./static/js/perf.min.js?v=2.0.158"></script>
 </head>
 <body>
   <!-- 移动端侧边栏遮罩 -->
@@ -224,14 +224,27 @@
               <svg class="oc-icon" width="26" height="26" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9.999 2.5q-.809.007-1.501.033M14 2.5q.809.007 1.501.033m3.502.598c.426.19.79.436 1.11.755c.32.32.565.684.755 1.11m-17.738 0c.19-.426.436-.79.755-1.11c.32-.32.684-.565 1.11-.755M21.5 9.999a51 51 0 0 0-.033-1.501M21.5 14q-.007.809-.033 1.501m-.598 3.502c-.19.426-.436.79-.755 1.11c-.32.32-.684.565-1.11.755m-3.502.598q-.692.026-1.5.033m-4.003 0a51 51 0 0 1-1.501-.033m-3.502-.598a3.6 3.6 0 0 1-1.11-.755a3.6 3.6 0 0 1-.755-1.11M2.5 14.001q.007.809.033 1.501M2.5 10q.007-.809.033-1.501M7 8h8m-8 4h10M7 16h6"/></svg>
             </button>
             <div class="composer-tools hidden" id="composer-tools">
-              <button type="button" class="composer-tool" id="composer-tool-image">
-                <span class="composer-tool-name">绘画</span>
-                <span class="composer-tool-val">生成图片</span>
-              </button>
-              <button type="button" class="composer-tool" id="composer-tool-video">
-                <span class="composer-tool-name">生视频</span>
-                <span class="composer-tool-val">生成视频</span>
-              </button>
+              <!-- 生图/生视频行:左边是打开生成弹窗的按钮,右边是模型下拉。
+                   模型自动从全站可用模型里取(跨供应商),不再只认当前供应商——
+                   入口在「任意供应商有该类模型」时就会出现,只看当前供应商时下拉会是空的。 -->
+              <div class="composer-tool composer-tool-media" id="composer-tool-image">
+                <button type="button" class="composer-tool-main" id="composer-tool-image-go">
+                  <span class="composer-tool-name">绘画</span>
+                </button>
+                <div class="select-box select-box-sm composer-media-pick" id="composer-image-model" data-value="" role="button" tabindex="0" aria-haspopup="listbox" aria-label="选择生图模型" title="选择生图模型">
+                  <span class="sb-label">生成图片</span>
+                  <span class="sb-arrow"><svg class="oc-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 9.5L12 14.5 17 9.5"/></svg></span>
+                </div>
+              </div>
+              <div class="composer-tool composer-tool-media" id="composer-tool-video">
+                <button type="button" class="composer-tool-main" id="composer-tool-video-go">
+                  <span class="composer-tool-name">生视频</span>
+                </button>
+                <div class="select-box select-box-sm composer-media-pick" id="composer-video-model" data-value="" role="button" tabindex="0" aria-haspopup="listbox" aria-label="选择视频模型" title="选择视频模型">
+                  <span class="sb-label">生成视频</span>
+                  <span class="sb-arrow"><svg class="oc-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 9.5L12 14.5 17 9.5"/></svg></span>
+                </div>
+              </div>
               <button type="button" class="composer-tool" id="composer-tool-compare">
                 <span class="composer-tool-name">模型对比</span>
                 <span class="composer-tool-val">多模型并答</span>
@@ -1049,26 +1062,26 @@
     <button class="btn small primary" id="guest-bar-login" type="button">登录 / 注册</button>
   </div>
 
-  <script defer src="./static/js/config.min.js?v=2.0.157"></script>
-  <script defer src="./static/js/store.min.js?v=2.0.157"></script>
-  <script defer src="./static/js/icons.min.js?v=2.0.157"></script>
-  <script defer src="./static/js/logos.min.js?v=2.0.157"></script>
-  <script defer src="./static/js/components.min.js?v=2.0.157"></script>
-  <script defer src="./static/js/ui.min.js?v=2.0.157"></script>
-  <script defer src="./static/js/settings-sync.min.js?v=2.0.157"></script>
-  <script defer src="./static/js/assistants.min.js?v=2.0.157"></script>
-  <script defer src="./static/js/conversations.min.js?v=2.0.157"></script>
-  <script defer src="./static/js/renderer.min.js?v=2.0.157"></script>
-  <script defer src="./static/js/reasoning.min.js?v=2.0.157"></script>
-  <script defer src="./static/js/office-formula-copy.min.js?v=2.0.157"></script>
-  <script defer src="./static/js/citations.min.js?v=2.0.157"></script>
-  <script defer src="./static/js/messages.min.js?v=2.0.157"></script>
-  <script defer src="./static/js/multimodal.min.js?v=2.0.157"></script>
-  <script defer src="./static/js/app.min.js?v=2.0.157"></script>
-  <script defer src="./static/js/groupui.min.js?v=2.0.157"></script>
-  <script defer src="./static/js/notes.min.js?v=2.0.157"></script>
-  <script defer src="./static/js/im.min.js?v=2.0.157"></script>
-  <script defer src="./static/js/web.min.js?v=2.0.157"></script>
-  <script defer src="./static/js/toolbox.min.js?v=2.0.157"></script>
+  <script defer src="./static/js/config.min.js?v=2.0.158"></script>
+  <script defer src="./static/js/store.min.js?v=2.0.158"></script>
+  <script defer src="./static/js/icons.min.js?v=2.0.158"></script>
+  <script defer src="./static/js/logos.min.js?v=2.0.158"></script>
+  <script defer src="./static/js/components.min.js?v=2.0.158"></script>
+  <script defer src="./static/js/ui.min.js?v=2.0.158"></script>
+  <script defer src="./static/js/settings-sync.min.js?v=2.0.158"></script>
+  <script defer src="./static/js/assistants.min.js?v=2.0.158"></script>
+  <script defer src="./static/js/conversations.min.js?v=2.0.158"></script>
+  <script defer src="./static/js/renderer.min.js?v=2.0.158"></script>
+  <script defer src="./static/js/reasoning.min.js?v=2.0.158"></script>
+  <script defer src="./static/js/office-formula-copy.min.js?v=2.0.158"></script>
+  <script defer src="./static/js/citations.min.js?v=2.0.158"></script>
+  <script defer src="./static/js/messages.min.js?v=2.0.158"></script>
+  <script defer src="./static/js/multimodal.min.js?v=2.0.158"></script>
+  <script defer src="./static/js/app.min.js?v=2.0.158"></script>
+  <script defer src="./static/js/groupui.min.js?v=2.0.158"></script>
+  <script defer src="./static/js/notes.min.js?v=2.0.158"></script>
+  <script defer src="./static/js/im.min.js?v=2.0.158"></script>
+  <script defer src="./static/js/web.min.js?v=2.0.158"></script>
+  <script defer src="./static/js/toolbox.min.js?v=2.0.158"></script>
 </body>
 </html>

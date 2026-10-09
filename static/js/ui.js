@@ -30,6 +30,7 @@
     judgeModel: '',        // AI 工具判定所用模型:'' = 跟随当前对话模型;否则 "providerId\nmodelId"
     aiJudge: true,         // AI 工具判定总开关:关闭后不再调用判定,出图回退粗略识别、标题回退本地截取
     imageModel: '',        // 默认生图模型:'' = 用第一个可用生图模型;否则 "providerId\nmodelId"
+    videoModel: '',        // 默认生视频模型:'' = 用上次使用/第一个可用视频模型;否则 "providerId\nmodelId"
     autoImageMode: 'auto', // 对话中自动出图:off=关闭 | rough=粗略关键词识别 | auto=智能判定(默认)
     autoImageModel: '',    // [已并入 AI 工具判定] 旧字段,仅作迁移回退
     elapsed: true,         // 显示生成耗时

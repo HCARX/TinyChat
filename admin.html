@@ -9,16 +9,16 @@
 <meta name="robots" content="noindex,nofollow">
 <link rel="icon" type="image/svg+xml" href="./logo-icon.svg">
 <link rel="apple-touch-icon" href="./static/logo/app-icon-192.png">
-<link rel="stylesheet" href="./static/css/style.min.css?v=2.0.157">
-<link rel="stylesheet" href="./vendor/highlight/github.min.css?v=2.0.157" id="hljs-theme">
-<link rel="stylesheet" href="./vendor/katex/katex.min.css?v=2.0.157">
-<link rel="stylesheet" href="./static/css/enhanced.min.css?v=2.0.157">
-<link rel="stylesheet" href="./static/css/refine.min.css?v=2.0.157">
-<link rel="stylesheet" href="./static/css/redesign.min.css?v=2.0.157">
-<link rel="stylesheet" href="./static/css/polish.min.css?v=2.0.157">
-<link rel="stylesheet" href="./static/css/markdown.min.css?v=2.0.157">
-<link rel="stylesheet" href="./static/css/chrome.min.css?v=2.0.157">
-<script src="./static/js/theme-boot.min.js?v=2.0.157"></script>
+<link rel="stylesheet" href="./static/css/style.min.css?v=2.0.158">
+<link rel="stylesheet" href="./vendor/highlight/github.min.css?v=2.0.158" id="hljs-theme">
+<link rel="stylesheet" href="./vendor/katex/katex.min.css?v=2.0.158">
+<link rel="stylesheet" href="./static/css/enhanced.min.css?v=2.0.158">
+<link rel="stylesheet" href="./static/css/refine.min.css?v=2.0.158">
+<link rel="stylesheet" href="./static/css/redesign.min.css?v=2.0.158">
+<link rel="stylesheet" href="./static/css/polish.min.css?v=2.0.158">
+<link rel="stylesheet" href="./static/css/markdown.min.css?v=2.0.158">
+<link rel="stylesheet" href="./static/css/chrome.min.css?v=2.0.158">
+<script src="./static/js/theme-boot.min.js?v=2.0.158"></script>
 </head>
 <body class="admin-body">
 <form id="admin-fields" autocomplete="off" style="display:contents">
@@ -1045,6 +1045,10 @@
     <div class="admin-card">
       <h2>版本更新</h2>
       <p class="muted small">从 GitHub Releases 检查新版本并在线升级。更新只覆盖程序文件，<b>data/</b> 数据目录与 <b>config.php</b> 不会被改动；升级前的程序会自动备份到 <b>data/update/backup/</b>。需要主机可访问更新源（config.php 可配镜像）且 PHP 启用 zip 或 phar 扩展。</p>
+      <div class="row-between" style="gap:10px;flex-wrap:wrap;margin-top:6px">
+        <label class="user-form-admin" style="margin:0"><span class="switch"><input type="checkbox" id="upd-auto" checked><span class="slider"></span></span><span>自动更新</span></label>
+        <span class="muted small" style="flex:1;min-width:200px">开启后，打开本面板时若发现新版本会自动下载并升级（更新前照常自动备份）。关闭后仅提示，需手动点「一键更新」。</span>
+      </div>
       <div class="row-between" style="gap:8px;flex-wrap:wrap;margin-top:6px">
         <span class="small">当前版本 <b id="upd-current">—</b> <span class="muted small" id="upd-cached"></span></span>
         <span class="row-between" style="gap:8px;flex-wrap:nowrap">
@@ -1055,7 +1059,7 @@
       <p class="muted small" id="upd-status" style="margin:8px 0 0">正在加载…</p>
       <div id="upd-result" class="hidden" style="margin-top:12px">
         <div class="section-title">最新版本 <span id="upd-latest"></span> <span class="muted small" id="upd-published"></span></div>
-        <pre id="upd-notes" style="white-space:pre-wrap;word-break:break-word;max-height:320px;overflow:auto;background:rgba(127,127,127,.08);border:1px solid var(--hairline);border-radius:10px;padding:10px 12px;font-family:ui-monospace,SFMono-Regular,Consolas,'Courier New',monospace;font-size:12.5px;line-height:1.6"></pre>
+        <div id="upd-notes" class="upd-notes"></div>
         <a id="upd-link" href="#" target="_blank" rel="noopener" class="small">在 GitHub 查看该版本 ↗</a>
       </div>
       <p class="muted small" id="upd-last" style="margin:10px 0 0"></p>
@@ -1300,17 +1304,17 @@
   </div>
 </div>
 </form>
-<script defer src="./static/js/config.min.js?v=2.0.157"></script>
-<script defer src="./static/js/icons.min.js?v=2.0.157"></script>
-<script defer src="./vendor/markdown-it/markdown-it.min.js?v=2.0.157"></script>
-<script defer src="./vendor/markdown-it/markdown-it-footnote.min.js?v=2.0.157"></script>
-<script defer src="./vendor/markdown-it/markdown-it-emoji.min.js?v=2.0.157"></script>
-<script defer src="./vendor/dompurify/purify.min.js?v=2.0.157"></script>
-<script defer src="./vendor/katex/katex.min.js?v=2.0.157"></script>
-<script defer src="./vendor/highlight/highlight.min.js?v=2.0.157"></script>
-<script defer src="./static/js/ui.min.js?v=2.0.157"></script>
-<script defer src="./static/js/components.min.js?v=2.0.157"></script>
-<script defer src="./static/js/renderer.min.js?v=2.0.157"></script>
-<script defer src="./static/js/admin.min.js?v=2.0.157"></script>
+<script defer src="./static/js/config.min.js?v=2.0.158"></script>
+<script defer src="./static/js/icons.min.js?v=2.0.158"></script>
+<script defer src="./vendor/markdown-it/markdown-it.min.js?v=2.0.158"></script>
+<script defer src="./vendor/markdown-it/markdown-it-footnote.min.js?v=2.0.158"></script>
+<script defer src="./vendor/markdown-it/markdown-it-emoji.min.js?v=2.0.158"></script>
+<script defer src="./vendor/dompurify/purify.min.js?v=2.0.158"></script>
+<script defer src="./vendor/katex/katex.min.js?v=2.0.158"></script>
+<script defer src="./vendor/highlight/highlight.min.js?v=2.0.158"></script>
+<script defer src="./static/js/ui.min.js?v=2.0.158"></script>
+<script defer src="./static/js/components.min.js?v=2.0.158"></script>
+<script defer src="./static/js/renderer.min.js?v=2.0.158"></script>
+<script defer src="./static/js/admin.min.js?v=2.0.158"></script>
 </body>
 </html>

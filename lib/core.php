@@ -6,7 +6,7 @@ if (!defined('TC_ROOT')) {
     define('TC_ROOT', dirname(__DIR__));
 }
 
-define('TC_VERSION', '2.0.157');
+define('TC_VERSION', '2.0.158');
 // 单篇笔记正文上限(字符)。超出时接口明确报错而不是静默截断。
 define('TC_NOTE_MAX_CHARS', 500000);
 // 敏感词库上限(去重后的条数)。达到上限后新增词条被丢弃,单个词条本身不截断。
@@ -197,6 +197,9 @@ $TC_SETTINGS_DEFAULTS = array(
     // 数据备份:每日自动备份整库快照到 data/backup/,保留最近 N 份
     'backupEnabled' => true,
     'backupKeep' => 7,
+    // 自动更新:打开后台「版本更新」面板时,若发现新版本就自动执行更新(默认开启)。
+    // 复用与「一键更新」完全相同的下载/校验/备份/加锁流程;关闭后只能手动点「一键更新」。
+    'autoUpdate' => true,
     // 代理接口限流:每用户每分钟最大请求数,0 = 不限制
     'rateLimitPerMin' => 30,
     // 会话:登录态有效天数;authEpoch 递增可强制全站重新登录
@@ -1465,6 +1468,7 @@ function tc_normalize_settings($raw) {
     $s['modelAggHideUnmerged'] = !empty($s['modelAggHideUnmerged']);
     $s['backupEnabled'] = !array_key_exists('backupEnabled', $s) || !empty($s['backupEnabled']);
     $s['backupKeep'] = min(30, max(1, (int) (isset($s['backupKeep']) ? $s['backupKeep'] : 7) ?: 7));
+    $s['autoUpdate'] = !array_key_exists('autoUpdate', $s) || !empty($s['autoUpdate']);
     $s['rateLimitPerMin'] = min(600, max(0, (int) (isset($s['rateLimitPerMin']) ? $s['rateLimitPerMin'] : 30)));
     $s['sessionDays'] = min(30, max(1, (int) (isset($s['sessionDays']) ? $s['sessionDays'] : 7) ?: 7));
     $s['authEpoch'] = max(1, (int) (isset($s['authEpoch']) ? $s['authEpoch'] : 1));

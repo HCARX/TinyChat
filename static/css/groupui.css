@@ -9,6 +9,10 @@
 .chat-mode-row .switch {
   width: 34px;
   height: 20px;
+  /* style.css 的 .switch 为挡住 .field span{display:block} 钉了 min-height:26px;
+     min-height 恒压 height,这里不跟着改就会被撑回 26px 高,而旋钮仍是 14px,
+     于是轨道里空一大截(用户截图里的「开关样式乱了」)。尺寸必须成对覆写。 */
+  min-height: 20px;
   margin-left: auto;
   flex-shrink: 0;
 }

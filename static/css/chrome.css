@@ -887,7 +887,7 @@ html[data-oc-theme] .sidebar .sidebar-model-wrap > * { margin-bottom: 0; }
   left: 0;
   bottom: calc(100% + 8px);
   z-index: 46;
-  min-width: 232px;
+  min-width: 260px;
   padding: 4px;
   border: 1px solid var(--hairline);
   border-radius: 12px;
@@ -913,6 +913,37 @@ html[data-oc-theme] .sidebar .sidebar-model-wrap > * { margin-bottom: 0; }
 }
 .composer-tool:hover { background: var(--bg-hover); }
 .composer-tool-val { color: var(--text-tertiary); font-size: 0.929rem; }
+/* 生图 / 生视频行:左边是打开生成弹窗的动作按钮,右边是模型下拉。
+   行本身是 div(下拉要能独立点击,不能整行一个按钮),所以把 hover 交给两个子元素,
+   行自身不高亮 —— 否则整行变灰会盖住下拉自己的悬停反馈。 */
+.composer-tool-media {
+  gap: 8px;
+  padding: 4px 6px 4px 12px;
+  cursor: default;
+}
+.composer-tool-media:hover { background: transparent; }
+.composer-tool-main {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+  padding: 5px 6px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 1.000rem;
+  cursor: pointer;
+  text-align: left;
+}
+.composer-tool-main:hover { background: var(--bg-hover); }
+.composer-media-pick {
+  flex-shrink: 0;
+  min-width: 96px;
+  max-width: 148px;
+}
+.composer-media-pick .sb-label { font-size: 0.929rem; color: var(--text-tertiary); }
 .composer-tool-group {
   display: flex;
   flex-direction: column;
@@ -5826,3 +5857,60 @@ body.admin-body { overflow: visible !important; }
   color: var(--text-secondary);
   font-weight: 400;
 }
+/* ============================================================
+   后台「版本更新」:发布说明(Markdown → 富文本)
+   ------------------------------------------------------------
+   发布说明是 GitHub Release 的 body,本身就是 Markdown。此前直接塞进 <pre> 显示,
+   用户看到的是满屏的 # / * / 反引号。这里改成渲染后的富文本,并补上后台语境下的
+   排版(chat 的 .md-prose 样式只作用于 .msg.assistant,后台拿不到)。
+   ============================================================ */
+.upd-notes {
+  max-height: 320px;
+  overflow: auto;
+  margin-top: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  background: rgba(127, 127, 127, .08);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+.upd-notes > :first-child { margin-top: 0; }
+.upd-notes > :last-child { margin-bottom: 0; }
+.upd-notes h1, .upd-notes h2, .upd-notes h3, .upd-notes h4 {
+  margin: 0.9em 0 0.4em;
+  font-weight: 650;
+  line-height: 1.35;
+}
+.upd-notes h1 { font-size: 1.15em; }
+.upd-notes h2 { font-size: 1.08em; }
+.upd-notes h3, .upd-notes h4 { font-size: 1em; }
+.upd-notes p { margin: 0.5em 0; }
+.upd-notes ul, .upd-notes ol { margin: 0.5em 0; padding-left: 1.5em; }
+.upd-notes li { margin: 0.2em 0; }
+.upd-notes li::marker { color: var(--brand, var(--accent)); }
+.upd-notes a { color: var(--brand, var(--accent)); }
+.upd-notes code {
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: var(--bg-hover);
+  font-family: ui-monospace, SFMono-Regular, Consolas, 'Courier New', monospace;
+  font-size: 0.92em;
+}
+.upd-notes pre {
+  margin: 0.6em 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--bg-hover);
+  overflow-x: auto;
+}
+.upd-notes pre code { padding: 0; background: transparent; }
+.upd-notes blockquote {
+  margin: 0.6em 0;
+  padding: 4px 12px;
+  border-left: 3px solid var(--hairline);
+  color: var(--text-secondary);
+}
+.upd-notes table { border-collapse: collapse; max-width: 100%; }
+.upd-notes th, .upd-notes td { border: 1px solid var(--hairline); padding: 5px 9px; }
+.upd-notes img { max-width: 100%; height: auto; border-radius: 8px; }
