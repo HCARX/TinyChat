@@ -1034,6 +1034,10 @@ function tc_web_fetch($url, $userId, $opts = array()) {
         $ca = tc_cacert_path();
         if ($ca) $optsCurl[CURLOPT_CAINFO] = $ca;
         if ($body !== null) $optsCurl[CURLOPT_POSTFIELDS] = $body;
+        // 出站代理:与全局设置一致,在线浏览器抓取同样走代理(留空则直连)。
+        // 注意 socks*h 代理下 CURLOPT_RESOLVE 的本地固定不生效(改由代理解析),
+        // SSRF 判定仍在 tc_web_guard 里按 URL 主机完成,不依赖解析固定。
+        tc_curl_apply_proxy($optsCurl);
         curl_setopt_array($ch, $optsCurl);
         $buf = '';
         $tooBig = false;
@@ -1496,6 +1500,8 @@ function tc_web_prefetch_warm($urls, $userId, $cnOnly, $concurrency, $cnAllowAss
         ));
         $ca = tc_cacert_path();
         if ($ca) curl_setopt($ch, CURLOPT_CAINFO, $ca);
+        $proxyOpts = array();
+        if (tc_curl_apply_proxy($proxyOpts)) curl_setopt_array($ch, $proxyOpts);
         curl_multi_add_handle($multi, $ch);
         $active[(int) $ch] = array('ch' => $ch, 'url' => $url, 'buf' => &$buf, 'ctype' => &$ctype, 'status' => &$status);
         return $ch;
@@ -2107,10 +2113,11 @@ function tc_web_ai_call($plan) {
     $format = isset($provider['apiFormat']) && in_array($provider['apiFormat'], array('chat', 'responses', 'completions', 'anthropic'), true) ? $provider['apiFormat'] : 'chat';
     $apiKey = trim((string) tc_provider_key_for_model($plan['providerFull'], (string) $plan['model']));
     $baseUrl = rtrim(trim((string) (isset($provider['baseUrl']) ? $provider['baseUrl'] : '')), '/');
-    if ($apiKey === '' || !preg_match('#^https?://#i', $baseUrl)) {
+    // 地址必需;Key 可留空(本地无鉴权上游),留空时不发认证头。
+    if (!preg_match('#^https?://#i', $baseUrl)) {
         tc_web_ai_refund($uid);
         tc_quota_refund_pending();
-        return array('ok' => false, 'error' => '供应商配置不完整（缺 Key 或地址）');
+        return array('ok' => false, 'error' => '供应商配置不完整（缺地址）');
     }
     $url = tc_upstream_path($baseUrl, $format);
     if (!tc_upstream_url_is_safe($url)) {
@@ -2119,13 +2126,7 @@ function tc_web_ai_call($plan) {
         return array('ok' => false, 'error' => '供应商地址不可用');
     }
     tc_quota_mark_pending($uid, (float) $plan['reserved']);
-    $headers = array('Content-Type' => 'application/json', 'Accept' => 'application/json');
-    if ($format === 'anthropic') {
-        $headers['x-api-key'] = $apiKey;
-        $headers['anthropic-version'] = '2023-06-01';
-    } else {
-        $headers['Authorization'] = 'Bearer ' . $apiKey;
-    }
+    $headers = tc_upstream_auth_headers($format, $apiKey, false);
     $timeout = min(180000, max(5000, (int) $plan['timeout']));
     $res = tc_http_request($url, 'POST', $headers, tc_json_encode(tc_web_ai_build_body($plan, $format)), $timeout, false);
     $bad = null;

@@ -453,6 +453,8 @@ function tc_normalize_provider_input($b, $base = array(), $demo = false) {
         }
         unset($mm);
     }
+    // API Key 可留空(无鉴权上游):始终落一个字符串字段,避免后续加密/校验读到未定义下标
+    if (!isset($p['apiKey']) || !is_string($p['apiKey'])) $p['apiKey'] = '';
     if (empty($p['apiFormat'])) $p['apiFormat'] = 'chat';
     if (!isset($p['costPerCall']) || !is_numeric($p['costPerCall'])) $p['costPerCall'] = 1;
     if (!isset($p['billingMode']) || !in_array($p['billingMode'], array('call', 'token'), true)) $p['billingMode'] = 'call';
@@ -469,7 +471,9 @@ function tc_validate_provider($p) {
     if (!tc_upstream_url_is_safe($p['baseUrl'])) {
         return 'Base URL 指向内网或保留地址,或端口不被允许(仅支持 80/443/8080/8443 的公网地址)';
     }
-    if (empty($p['apiKey'])) return 'API Key 不能为空';
+    // API Key 可留空:面向本地 Ollama / LM Studio 或自带无鉴权网关的上游。
+    // 留空时不发送 Authorization/x-api-key 头(见 tc_upstream_auth_headers),
+    // 由上游自行决定是否拒绝 —— 不再在保存阶段硬性拦截。
     if (empty($p['models'])) return '请至少提供一个模型';
     return null;
 }
@@ -3813,6 +3817,11 @@ function tc_api_admin_save_settings() {
         // 两项都不该由演示身份改动,与公告/协议同一口径直接拒绝。
         if (tc_is_demo_user($admin) && array_key_exists('moderation', $src)) {
             tc_fail(403, '演示管理员不能修改内容安全设置');
+        }
+        // 「允许供应商指向内网」会临时解除 SSRF 防线,属安全相关设置,与 SMTP/内容安全同一口径:
+        // 演示改动虽会回滚,回滚前却已可被用来探测内网,因此一律拒绝。
+        if (tc_is_demo_user($admin) && array_key_exists('allowPrivateUpstream', $src)) {
+            tc_fail(403, '演示管理员不能修改内网访问设置');
         }
         if (array_key_exists('announcement', $src)) {
             if (!is_array($src['announcement'])) tc_fail(400, '公告设置格式不正确');

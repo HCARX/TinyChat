@@ -100,6 +100,14 @@ jobs:
         run: php tests/html-text.php
       - name: 上游地址拼接自检(补 /v1 / 不重复)
         run: php tests/upstream-url.php
+      - name: 出站代理自检(scheme 映射 http/https/socks4/socks4a/socks5/socks5h / 非法串被拒 / 直连)
+        # 代理只在「scheme -> CURLOPT_PROXYTYPE」这一处映射:少写一个 scheme 会让那类代理
+        # 静默退化成 HTTP 代理(连不上又不报错),非法串则可能被原样塞进 curl。静态断言挡住回归。
+        run: php tests/outbound-proxy.php
+      - name: 内网上游开关自检(默认拒绝本地/内网 / 开启后放行 / 底线仍守 / 环境变量来源)
+        # 这个开关临时解除 SSRF 防线:默认必须关闭、开启后仍拒绝带凭据 URL 与非 http(s) 协议、
+        # 设置归一化只认布尔真值 —— 任一处写松了都等于把「读内网」的能力默认开放出去。
+        run: php tests/private-upstream.php
       - name: 署名完整性守卫自检(篡改拦截 / 合法放行)
         run: php tests/attribution.php
       - name: 本地存储契约自检(大块键不得直接走 localStorage / 读前先开库 / 迁移顺序)

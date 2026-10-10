@@ -9,16 +9,16 @@
 <meta name="robots" content="noindex,nofollow">
 <link rel="icon" type="image/svg+xml" href="./logo-icon.svg">
 <link rel="apple-touch-icon" href="./static/logo/app-icon-192.png">
-<link rel="stylesheet" href="./static/css/style.min.css?v=2.0.159">
-<link rel="stylesheet" href="./vendor/highlight/github.min.css?v=2.0.159" id="hljs-theme">
-<link rel="stylesheet" href="./vendor/katex/katex.min.css?v=2.0.159">
-<link rel="stylesheet" href="./static/css/enhanced.min.css?v=2.0.159">
-<link rel="stylesheet" href="./static/css/refine.min.css?v=2.0.159">
-<link rel="stylesheet" href="./static/css/redesign.min.css?v=2.0.159">
-<link rel="stylesheet" href="./static/css/polish.min.css?v=2.0.159">
-<link rel="stylesheet" href="./static/css/markdown.min.css?v=2.0.159">
-<link rel="stylesheet" href="./static/css/chrome.min.css?v=2.0.159">
-<script src="./static/js/theme-boot.min.js?v=2.0.159"></script>
+<link rel="stylesheet" href="./static/css/style.min.css?v=2.0.161">
+<link rel="stylesheet" href="./vendor/highlight/github.min.css?v=2.0.161" id="hljs-theme">
+<link rel="stylesheet" href="./vendor/katex/katex.min.css?v=2.0.161">
+<link rel="stylesheet" href="./static/css/enhanced.min.css?v=2.0.161">
+<link rel="stylesheet" href="./static/css/refine.min.css?v=2.0.161">
+<link rel="stylesheet" href="./static/css/redesign.min.css?v=2.0.161">
+<link rel="stylesheet" href="./static/css/polish.min.css?v=2.0.161">
+<link rel="stylesheet" href="./static/css/markdown.min.css?v=2.0.161">
+<link rel="stylesheet" href="./static/css/chrome.min.css?v=2.0.161">
+<script src="./static/js/theme-boot.min.js?v=2.0.161"></script>
 </head>
 <body class="admin-body">
 <form id="admin-fields" autocomplete="off" style="display:contents">
@@ -128,9 +128,11 @@
       </label>
       <p class="muted small" style="margin:-6px 0 10px">调用上游 AI 接口的最长等待时间。生成长文或使用较慢的模型/平台时适当调大。<b>若上游根本连不上</b>（地址错误、网络不通），会更快返回明确提示，不受此值影响。</p>
       <label class="field"><span>出站代理（留空 = 直连）</span>
-          <input id="chat-outbound-proxy" type="text" maxlength="300" placeholder="http://127.0.0.1:2080" autocomplete="off">
+          <input id="chat-outbound-proxy" type="text" maxlength="300" placeholder="http://127.0.0.1:2080 或 socks5h://127.0.0.1:1080" autocomplete="off">
       </label>
-      <p class="muted small" style="margin:-6px 0 10px">填写后所有出站请求（含「模型元数据」拉取 litellm 价格表）都走该代理。支持 <code>http://</code>、<code>https://</code>、<code>socks5h://</code>。国内网络直连 <code>raw.githubusercontent.com</code> 常下到一半卡死，走代理可稳定完成。</p>
+      <p class="muted small" style="margin:-6px 0 10px">填写后<b>所有</b>出站请求（含「模型元数据」拉取 litellm 价格表、在线更新下载、在线浏览器抓取、图片与视频代理）都走该代理。支持 <code>http://</code>、<code>https://</code>、<code>socks4://</code>、<code>socks4a://</code>、<code>socks5://</code>、<code>socks5h://</code>（带 <code>h</code> 表示由代理解析域名，可绕开本地 DNS 污染）。国内网络直连 <code>raw.githubusercontent.com</code> 常下到一半卡死，走代理可稳定完成。</p>
+      <label class="user-form-admin"><span class="switch"><input type="checkbox" id="chat-allow-private-upstream"><span class="slider"></span></span><span>允许供应商指向内网 / 本地地址（对接本地 Ollama / LM Studio）</span></label>
+      <p class="muted small" style="margin:-6px 0 10px">关闭时供应商 Base URL 必须是公网地址，端口限 80 / 443 / 8080 / 8443 —— 防止有人借服务器去读内网服务（SSRF）。<b>自托管单机</b>要连 <code>http://127.0.0.1:11434</code> 这类本地模型时才需开启；<b>公网多租户部署请保持关闭</b>，开启等于把「读内网」的能力交给任何能建供应商的人。</p>
       <label class="user-form-admin"><span class="switch"><input type="checkbox" id="chat-context-learn" checked><span class="slider"></span></span><span>自动学习上下文窗口（从上游 context length 报错回填模型的最大上下文，不覆盖手动设置）</span></label>
       <label class="user-form-admin"><span class="switch"><input type="checkbox" id="chat-persist-chats" checked><span class="slider"></span></span><span>服务器保存对话记录（关闭后对话仅存用户浏览器本地，服务器不留存）</span></label>
       <label class="user-form-admin"><span class="switch"><input type="checkbox" id="chat-sync-settings" checked><span class="slider"></span></span><span>用户设置云同步（主题、字体、模型选择、群聊配置等随账号保存到服务器，换设备登录后自动恢复）</span></label>
@@ -614,13 +616,13 @@
           <label class="field"><span>名称</span><input id="ap-name" placeholder="默认供应商"></label>
           <label class="field"><span>Base URL *</span><input id="ap-baseurl" placeholder="https://api.openai.com"></label>
           <div class="field" id="ap-keys-field">
-            <span>API Key *（可配置多个，各自命名；可为同一模型绑定多把 Key）</span>
+            <span>API Key（无鉴权上游可留空；可配置多个，各自命名；可为同一模型绑定多把 Key）</span>
             <div class="ap-keys" id="ap-keys"></div>
             <div class="ap-keys-actions">
               <button class="btn small" id="ap-key-add" type="button">+ 添加 Key</button>
               <label class="key-keep-option" title="Key 加密保存在服务器。默认勾选，保存后管理员可随时点小眼睛查看"><input id="ap-key-keep" type="checkbox" checked> 保存后保持显示</label>
             </div>
-            <p class="muted small" id="ap-keys-hint" style="margin:6px 0 0">只填一个 Key 时可留空名称；配置多个 Key 时必须各自命名（不可重名）。模型列表里可给同一模型绑定多把 Key 组成优先级链：请求优先用第一把，失败自动回退下一把。</p>
+            <p class="muted small" id="ap-keys-hint" style="margin:6px 0 0">留空表示上游无需鉴权（本地 Ollama / LM Studio 等），请求不会发送 Authorization 头。只填一个 Key 时可留空名称；配置多个 Key 时必须各自命名（不可重名）。模型列表里可给同一模型绑定多把 Key 组成优先级链：请求优先用第一把，失败自动回退下一把。</p>
           </div>
           <label class="field"><span>API 格式</span>
             <div class="select-box" id="ap-format" data-value="chat" role="button" tabindex="0">
@@ -1304,17 +1306,17 @@
   </div>
 </div>
 </form>
-<script defer src="./static/js/config.min.js?v=2.0.159"></script>
-<script defer src="./static/js/icons.min.js?v=2.0.159"></script>
-<script defer src="./vendor/markdown-it/markdown-it.min.js?v=2.0.159"></script>
-<script defer src="./vendor/markdown-it/markdown-it-footnote.min.js?v=2.0.159"></script>
-<script defer src="./vendor/markdown-it/markdown-it-emoji.min.js?v=2.0.159"></script>
-<script defer src="./vendor/dompurify/purify.min.js?v=2.0.159"></script>
-<script defer src="./vendor/katex/katex.min.js?v=2.0.159"></script>
-<script defer src="./vendor/highlight/highlight.min.js?v=2.0.159"></script>
-<script defer src="./static/js/ui.min.js?v=2.0.159"></script>
-<script defer src="./static/js/components.min.js?v=2.0.159"></script>
-<script defer src="./static/js/renderer.min.js?v=2.0.159"></script>
-<script defer src="./static/js/admin.min.js?v=2.0.159"></script>
+<script defer src="./static/js/config.min.js?v=2.0.161"></script>
+<script defer src="./static/js/icons.min.js?v=2.0.161"></script>
+<script defer src="./vendor/markdown-it/markdown-it.min.js?v=2.0.161"></script>
+<script defer src="./vendor/markdown-it/markdown-it-footnote.min.js?v=2.0.161"></script>
+<script defer src="./vendor/markdown-it/markdown-it-emoji.min.js?v=2.0.161"></script>
+<script defer src="./vendor/dompurify/purify.min.js?v=2.0.161"></script>
+<script defer src="./vendor/katex/katex.min.js?v=2.0.161"></script>
+<script defer src="./vendor/highlight/highlight.min.js?v=2.0.161"></script>
+<script defer src="./static/js/ui.min.js?v=2.0.161"></script>
+<script defer src="./static/js/components.min.js?v=2.0.161"></script>
+<script defer src="./static/js/renderer.min.js?v=2.0.161"></script>
+<script defer src="./static/js/admin.min.js?v=2.0.161"></script>
 </body>
 </html>

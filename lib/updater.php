@@ -51,6 +51,8 @@ function tc_update_http($url, $headers = array()) {
     );
     $ca = tc_cacert_path();
     if ($ca) $opts[CURLOPT_CAINFO] = $ca;
+    // 出站代理同样覆盖更新检查:国内主机直连 GitHub 常卡死,走代理才稳定。
+    tc_curl_apply_proxy($opts);
     curl_setopt_array($ch, $opts);
     $body = curl_exec($ch);
     $err = curl_error($ch);
@@ -82,6 +84,8 @@ function tc_update_download($url, $toFile, $headers = array()) {
     );
     $ca = tc_cacert_path();
     if ($ca) $opts[CURLOPT_CAINFO] = $ca;
+    // 出站代理同样覆盖更新包下载(见 tc_update_http 的说明)。
+    tc_curl_apply_proxy($opts);
     curl_setopt_array($ch, $opts);
     $ok = curl_exec($ch);
     $err = curl_error($ch);

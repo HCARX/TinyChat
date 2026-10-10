@@ -1212,8 +1212,9 @@ function tc_im_ai_reply($plan) {
         tc_quota_refund_pending();
         tc_im_ai_error_msg($plan, $msg);
     };
-    if ($apiKey === '' || !preg_match('/^https?:\/\//i', $baseUrl)) {
-        $fail('供应商配置不完整（缺 Key 或地址）');
+    // 地址必需;Key 可留空(本地无鉴权上游),留空时不发认证头。
+    if (!preg_match('/^https?:\/\//i', $baseUrl)) {
+        $fail('供应商配置不完整（缺地址）');
         return;
     }
     $body = tc_im_ai_build_body($plan, $format);
@@ -1222,13 +1223,7 @@ function tc_im_ai_reply($plan) {
         $fail('供应商地址不可用');
         return;
     }
-    $headers = array('Content-Type' => 'application/json', 'Accept' => 'application/json');
-    if ($format === 'anthropic') {
-        $headers['x-api-key'] = $apiKey;
-        $headers['anthropic-version'] = '2023-06-01';
-    } else {
-        $headers['Authorization'] = 'Bearer ' . $apiKey;
-    }
+    $headers = tc_upstream_auth_headers($format, $apiKey, false);
     $timeout = min(120000, max(5000, (int) (isset($plan['timeout']) ? $plan['timeout'] : 30000)));
     $res = tc_http_request($url, 'POST', $headers, tc_json_encode($body), $timeout, false);
     if (!$res['ok']) {

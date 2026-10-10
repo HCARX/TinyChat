@@ -6,7 +6,7 @@ if (!defined('TC_ROOT')) {
     define('TC_ROOT', dirname(__DIR__));
 }
 
-define('TC_VERSION', '2.0.159');
+define('TC_VERSION', '2.0.161');
 // 单篇笔记正文上限(字符)。超出时接口明确报错而不是静默截断。
 define('TC_NOTE_MAX_CHARS', 500000);
 // 敏感词库上限(去重后的条数)。达到上限后新增词条被丢弃,单个词条本身不截断。
@@ -153,10 +153,16 @@ $TC_SETTINGS_DEFAULTS = array(
     'mailTemplates' => null, // 下面统一赋值,避免默认数组里塞大段 HTML
     'packages' => array(),
     'proxyTimeoutMs' => 120000,
-    // 出站 HTTP 代理(如 http://127.0.0.1:2080)。留空=直连。
-    // 拉取 litellm 价格表等外部资源时用;国内网络直连 raw.githubusercontent.com
+    // 出站代理(如 http://127.0.0.1:2080、socks5h://127.0.0.1:1080)。留空=直连。
+    // 支持 http/https/socks4/socks4a/socks5/socks5h,所有出站请求(含更新下载、网页抓取、
+    // 图片/视频代理、拉取 litellm 价格表)统一走它;国内网络直连 raw.githubusercontent.com
     // 常在中途卡死(下到约 1MB 就停滞),走代理可稳定完成。
     'outboundProxy' => '',
+    // 允许供应商地址指向内网/本地(默认关闭)。关闭时供应商 Base URL 必须是公网地址,
+    // 且端口限于 80/443/8080/8443(见 tc_upstream_url_is_safe 的 SSRF 防线)。
+    // 自托管场景若要用本地 Ollama / LM Studio(http://127.0.0.1:11434 等)需手动开启;
+    // 公网多租户部署保持关闭 —— 开启等于把「读内网服务」的能力交给任何能建供应商的人。
+    'allowPrivateUpstream' => false,
     'loginMaxFails' => 5,
     'loginLockMs' => 60000,
     // 第三方一键登录:每个提供商的开关与凭据;开启且填全后前台登录页出现对应图标
@@ -404,16 +410,48 @@ function tc_cacert_path() {
 // 出站代理地址。优先级:环境变量 TC_OUTBOUND_PROXY > 显式设置的值(由 tc_with_db 内取好)。
 // 之所以不做成「这里直接查库」:tc_with_db 结束会释放全局 db,而同步流程里网络请求
 // 刻意放在事务之外(不占写锁),那时已经没有 db 可读,必须提前把值带出来。
+// 支持 http / https / socks4 / socks4a / socks5 / socks5h(后缀 h 表示由代理解析域名)。
 function tc_outbound_proxy() {
     static $proxy = null;
     if ($proxy !== null) return $proxy;
     $env = trim((string) getenv('TC_OUTBOUND_PROXY'));
-    if ($env !== '' && preg_match('#^(https?|socks5h?)://[^\s]{1,300}$#i', $env)) { $proxy = $env; return $proxy; }
+    if ($env !== '' && preg_match('#^(https?|socks4a?|socks5h?)://[^\s]{1,300}$#i', $env)) { $proxy = $env; return $proxy; }
     $proxy = '';
     if (!isset($GLOBALS['_tc_outbound_proxy'])) return $proxy;
     $v = trim((string) $GLOBALS['_tc_outbound_proxy']);
-    if ($v !== '' && preg_match('#^(https?|socks5h?)://[^\s]{1,300}$#i', $v)) $proxy = $v;
+    if ($v !== '' && preg_match('#^(https?|socks4a?|socks5h?)://[^\s]{1,300}$#i', $v)) $proxy = $v;
     return $proxy;
+}
+
+// 代理 scheme -> curl 代理类型常量。返回 array('type'=>int,'remoteDns'=>bool),未知 scheme 返回 null。
+// 各常量在旧 curl 上可能缺失,统一用 defined() 兜底,避免直接引用未定义常量报错。
+function tc_proxy_scheme_type($scheme) {
+    $scheme = strtolower(trim((string) $scheme));
+    $pick = function ($name, $fallback) {
+        return defined($name) ? constant($name) : $fallback;
+    };
+    if ($scheme === 'http') return array('type' => $pick('CURLPROXY_HTTP', 0), 'remoteDns' => false);
+    if ($scheme === 'https') return array('type' => $pick('CURLPROXY_HTTPS', $pick('CURLPROXY_HTTP', 0)), 'remoteDns' => false);
+    if ($scheme === 'socks4') return array('type' => $pick('CURLPROXY_SOCKS4', 4), 'remoteDns' => false);
+    if ($scheme === 'socks4a') return array('type' => $pick('CURLPROXY_SOCKS4A', 6), 'remoteDns' => true);
+    if ($scheme === 'socks5') return array('type' => $pick('CURLPROXY_SOCKS5', 5), 'remoteDns' => false);
+    if ($scheme === 'socks5h') return array('type' => $pick('CURLPROXY_SOCKS5_HOSTNAME', 7), 'remoteDns' => true);
+    return null;
+}
+
+// 把「出站代理」并入 curl 选项数组(按引用)。返回是否已启用代理。
+// 这是代理生效的唯一收口:tc_http_request 与所有不走它的直连点(更新下载、网页抓取、
+// 图片/视频代理)都调用它,避免「配了代理却有个别请求仍直连」。
+// 说明:socks*h 由代理解析域名,CURLOPT_RESOLVE 的本地固定对这类代理不再起作用;
+// 但 SSRF 判定仍在发请求前按 URL 主机做(见 tc_upstream_url_is_safe / tc_web_guard),
+// 因此代理模式下解析固定失效不影响「不请求内网」这条约束。
+function tc_curl_apply_proxy(&$opts) {
+    $proxy = tc_outbound_proxy();
+    if ($proxy === '') return false;
+    $opts[CURLOPT_PROXY] = $proxy;
+    $t = tc_proxy_scheme_type(parse_url($proxy, PHP_URL_SCHEME));
+    if ($t) $opts[CURLOPT_PROXYTYPE] = $t['type'];
+    return true;
 }
 
 // 时区:全站有若干处用 date()(备份文件名、导出文件名、笔记 AI 每日配额的分界)。
@@ -468,12 +506,19 @@ function tc_public_link($path, $token) {
     return tc_public_base_url() . '/' . ltrim($path, '/') . '?token=' . rawurlencode($token);
 }
 
-// 测试/自建环境的例外开关:置 1 时允许上游指向内网(如 E2E 用 127.0.0.1 的 mock 上游)。
-// 与 TC_PAGE_FETCH_BASE 等测试钩子同一约定——只能由部署者通过环境变量开启,
-// 不来自任何请求内容,所以不会成为绕过 SSRF 防线的口子。生产环境不要设置。
+// 允许上游指向内网/本地的开关(默认关闭)。两个来源,任一为真即放行:
+//   1) 环境变量 TC_ALLOW_PRIVATE_UPSTREAM=1(测试/自建部署用,只能由部署者设置);
+//   2) 后台「对话设置 → 允许供应商指向内网/本地地址」。
+// 与出站代理同一手法:设置值在 tc_with_db 里随库带进全局,因为 SSRF 判定可能在事务释放后执行。
+// 注意:只缓存 env 判定(它不会变);设置值每次都读全局,避免「先被早期调用缓存成 false」。
 function tc_upstream_allow_private() {
-    $v = strtolower(trim((string) getenv('TC_ALLOW_PRIVATE_UPSTREAM')));
-    return $v === '1' || $v === 'true' || $v === 'yes' || $v === 'on';
+    static $envAllow = null;
+    if ($envAllow === null) {
+        $v = strtolower(trim((string) getenv('TC_ALLOW_PRIVATE_UPSTREAM')));
+        $envAllow = ($v === '1' || $v === 'true' || $v === 'yes' || $v === 'on');
+    }
+    if ($envAllow) return true;
+    return !empty($GLOBALS['_tc_allow_private_upstream']);
 }
 
 // 供应商 Base URL 的出站目标校验(SSRF 防线)。
@@ -1402,9 +1447,11 @@ function tc_normalize_settings($raw) {
     $s['smtpKeyRevealable'] = !empty($s['smtpKeyRevealable']);
     $timeout = isset($s['proxyTimeoutMs']) ? (int) $s['proxyTimeoutMs'] : $TC_SETTINGS_DEFAULTS['proxyTimeoutMs'];
     $s['proxyTimeoutMs'] = min(600000, max(5000, $timeout ?: $TC_SETTINGS_DEFAULTS['proxyTimeoutMs']));
-    // 出站代理:只接受 http/https/socks5 形态,避免把任意字符串塞进 curl 选项
+    // 出站代理:只接受 http/https/socks4/socks4a/socks5/socks5h 形态,避免把任意字符串塞进 curl 选项
     $outProxy = trim((string) (isset($s['outboundProxy']) ? $s['outboundProxy'] : ''));
-    $s['outboundProxy'] = preg_match('#^(https?|socks5h?)://[^\s]{1,300}$#i', $outProxy) ? $outProxy : '';
+    $s['outboundProxy'] = preg_match('#^(https?|socks4a?|socks5h?)://[^\s]{1,300}$#i', $outProxy) ? $outProxy : '';
+    // 允许上游指向内网/本地(默认关闭)。布尔归一化,不接受其它形态。
+    $s['allowPrivateUpstream'] = !empty($s['allowPrivateUpstream']);
     $s['loginMaxFails'] = min(50, max(0, (int) $s['loginMaxFails']));
     // 第三方登录配置归一化:只接受注册表里的提供商与字段,凭据截断长度。
     // 注册表在 lib/oauth.php;单独加载 core 的场景(如 CI 自检)没有它,
@@ -2954,6 +3001,8 @@ function tc_with_db($write, $fn) {
     $GLOBALS['_tc_db'] = &$db;
     // 出站代理随库一起带出来:网络请求可能在事务释放之后才发,那时读不到 db 了
     $GLOBALS['_tc_outbound_proxy'] = isset($db['settings']['outboundProxy']) ? (string) $db['settings']['outboundProxy'] : '';
+    // 同理:是否允许上游指向内网/本地也要带出来(SSRF 判定在发请求前、事务之外执行)
+    $GLOBALS['_tc_allow_private_upstream'] = !empty($db['settings']['allowPrivateUpstream']);
     $GLOBALS['_tc_demo_before'] = null;
     $GLOBALS['_tc_db_ctx'] = array(
         'write' => $write, 'committed' => false, 'pdo' => $pdo,
@@ -3704,8 +3753,10 @@ function tc_provider_keys_error($keys) {
     return '';
 }
 
-// 将明文 Key 加密后写入供应商记录;失败时返回 false 且不改动记录
+// 将明文 Key 加密后写入供应商记录;失败时返回 false 且不改动记录。
+// 空明文表示「不使用 Key」(本地无鉴权上游):直接清空,不落一份空密文。
 function tc_provider_set_key(&$p, $plain) {
+    if ((string) $plain === '') { $p['apiKey'] = ''; return true; }
     $enc = tc_encrypt_secret($plain, tc_provider_key_aad($p));
     if ($enc === false) return false;
     $p['apiKey'] = $enc;

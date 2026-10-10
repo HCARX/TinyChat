@@ -1934,6 +1934,7 @@ function fillChatLimits(s) {
   if ($('chat-ratelimit')) $('chat-ratelimit').value = Math.min(600, Math.max(0, parseInt(src.rateLimitPerMin, 10) || 0));
   if ($('chat-timeout')) $('chat-timeout').value = Math.min(600, Math.max(5, Math.round((parseInt(src.proxyTimeoutMs, 10) || 120000) / 1000)));
   if ($('chat-outbound-proxy')) $('chat-outbound-proxy').value = String(src.outboundProxy || '');
+  if ($('chat-allow-private-upstream')) $('chat-allow-private-upstream').checked = src.allowPrivateUpstream === true;
   if ($('chat-context-learn')) $('chat-context-learn').checked = src.contextAutoLearn !== false;
   if ($('chat-persist-chats')) $('chat-persist-chats').checked = src.persistChats !== false;
   if ($('chat-sync-settings')) $('chat-sync-settings').checked = src.syncSettings !== false;
@@ -1975,16 +1976,17 @@ function fillChatLimits(s) {
     const imageArchiveEnabled = !!($('chat-img-archive') && $('chat-img-archive').checked);
     const imageArchiveQuotaMb = Math.min(10240, Math.max(50, parseInt($('chat-img-archive-quota') && $('chat-img-archive-quota').value, 10) || 500));
     const outboundProxy = String(($('chat-outbound-proxy') && $('chat-outbound-proxy').value) || '').trim();
+    const allowPrivateUpstream = !!($('chat-allow-private-upstream') && $('chat-allow-private-upstream').checked);
     // 前端先挡一道:格式不对就不提交,避免保存后静默变空(后端也会再校验一次)
-    if (outboundProxy && !/^(https?|socks5h?):\/\/\S{1,300}$/i.test(outboundProxy)) {
-      return toast('出站代理格式不正确，应形如 http://127.0.0.1:2080 或 socks5h://127.0.0.1:1080', true);
+    if (outboundProxy && !/^(https?|socks4a?|socks5h?):\/\/\S{1,300}$/i.test(outboundProxy)) {
+      return toast('出站代理格式不正确，应形如 http://127.0.0.1:2080、socks5h://127.0.0.1:1080 或 socks4://127.0.0.1:1080', true);
     }
     save.disabled = true;
     try {
       const r = await api('/api/admin/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contextMessages: ctx, maxContextMessages: maxCtx, temperature, rateLimitPerMin: rateLimit, proxyTimeoutMs: timeoutSec * 1000, contextAutoLearn: contextLearn, persistChats, syncSettings, apiSaveChats, healthOkMin: healthOk, healthWarnMin: healthWarn, imageArchiveEnabled, imageArchiveQuotaMb, outboundProxy }),
+        body: JSON.stringify({ contextMessages: ctx, maxContextMessages: maxCtx, temperature, rateLimitPerMin: rateLimit, proxyTimeoutMs: timeoutSec * 1000, contextAutoLearn: contextLearn, persistChats, syncSettings, apiSaveChats, healthOkMin: healthOk, healthWarnMin: healthWarn, imageArchiveEnabled, imageArchiveQuotaMb, outboundProxy, allowPrivateUpstream }),
       });
       const data = await r.json();
       if (!r.ok) return toast((data.error && data.error.message) || '保存失败', true);
@@ -2473,7 +2475,7 @@ $('ap-fetch-models').addEventListener('click', async () => {
   const pickKey = usable.find((k) => String(k.id) === wantId) || usable[0];
   const usedKey = pickKey && String(pickKey.apiKey || '').indexOf('••') < 0 ? String(pickKey.apiKey).trim() : '';
   const usedKeyId = pickKey ? pickKey.id : '';
-  if (!usedKey && !usedKeyId && !editId) { toast('请先填写 API Key', true); return; }
+  // Key 可留空:无鉴权上游(本地 Ollama / LM Studio)也能拉取模型列表
   // 按某个 Key 拉取模型列表:新供应商用明文字段,已保存的供应商可只传 keyId 由服务端解密
   const fetchByKey = async (kid) => {
     const k = AP_KEYS.find((x) => String(x.id) === String(kid));
@@ -2797,7 +2799,7 @@ $('ap-save').addEventListener('click', async () => {
     return !!(src && src.hasKey);   // 已保存过的密钥:保留占位,服务端沿用原密文
   });
   const editId = $('ap-save').dataset.editId;
-  if (!keys.length && !editId) return toast('请至少填写一个 API Key', true);
+  // Key 可留空:留空表示上游无需鉴权(本地 Ollama / LM Studio 等),不再强制至少一把。
   const url = editId ? '/api/admin/providers/' + editId : '/api/providers';
   const payload = { name, baseUrl, apiFormat, models, keys, costPerCall: cost, billingMode: ($('ap-billing') && $('ap-billing').getAttribute('data-value')) || 'call', pricePer1k: Math.min(1000, Math.max(0, parseFloat($('ap-price') && $('ap-price').value) || 0)), scope: 'global', keyRevealable: !!($('ap-key-keep') && $('ap-key-keep').checked) };
   // 兼容旧字段:取第一把有明文的 Key 作为主 Key;编辑时若一把都没改,不带 apiKey(服务端保留)

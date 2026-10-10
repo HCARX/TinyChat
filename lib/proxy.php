@@ -768,13 +768,9 @@ function tc_http_request($url, $method, $headers, $body, $timeoutMs, $stream = f
     $ca = tc_cacert_path();
     if ($ca) $opts[CURLOPT_CAINFO] = $ca;
     // 出站代理:管理员在「对话设置」配置后,所有出站请求(含拉取模型价格表)统一走它。
+    // 支持 http/https/socks4/socks4a/socks5/socks5h;类型由 scheme 决定(见 tc_curl_apply_proxy)。
     // 直连 raw.githubusercontent.com 在国内网络常下到一半卡死,代理能稳定完成。
-    $proxy = tc_outbound_proxy();
-    if ($proxy !== '') {
-        $opts[CURLOPT_PROXY] = $proxy;
-        // socks5h 表示由代理解析域名,避免本地 DNS 污染
-        if (stripos($proxy, 'socks5') === 0) $opts[CURLOPT_PROXYTYPE] = CURLPROXY_SOCKS5_HOSTNAME;
-    }
+    tc_curl_apply_proxy($opts);
     curl_setopt_array($ch, $opts);
     if ($body !== null) curl_setopt($ch, CURLOPT_POSTFIELDS, $body);
     if (!$sendExpect) curl_setopt($ch, CURLOPT_HTTPHEADER, array_merge($hdrs, array('Expect:', 'Content-Type:')));
@@ -1460,11 +1456,19 @@ function tc_upstream_auth_headers($format, $apiKey, $acceptStream = false) {
         'Content-Type' => 'application/json',
         'Accept' => $acceptStream ? 'text/event-stream, application/json' : 'application/json',
     );
-    if ($format === 'anthropic') {
-        $h['x-api-key'] = (string) $apiKey;
+    $apiKey = (string) $apiKey;
+    // 空 Key = 上游不需要鉴权(本地 Ollama / LM Studio 等):不发认证头。
+    // 发一个空的 "Bearer " 反而可能被部分网关判为「带了无效凭据」而拒绝。
+    if ($apiKey !== '') {
+        if ($format === 'anthropic') {
+            $h['x-api-key'] = $apiKey;
+            $h['anthropic-version'] = '2023-06-01';
+        } else {
+            $h['Authorization'] = 'Bearer ' . $apiKey;
+        }
+    } elseif ($format === 'anthropic') {
+        // Anthropic 协议必须有版本头,即便不带密钥
         $h['anthropic-version'] = '2023-06-01';
-    } else {
-        $h['Authorization'] = 'Bearer ' . (string) $apiKey;
     }
     return $h;
 }
@@ -1625,6 +1629,7 @@ function tc_fetch_pages_parallel($urls, $timeoutMs = 8000, $maxChars = 1800) {
         // 测试基址可能是本机地址(拿不到「公网解析」结果),此时不加 RESOLVE,交给系统解析
         if (!empty($e['resolve'])) $opts[CURLOPT_RESOLVE] = array($e['resolve']);
         if ($ca) $opts[CURLOPT_CAINFO] = $ca;
+        tc_curl_apply_proxy($opts);
         curl_setopt_array($ch, $opts);
         curl_multi_add_handle($mh, $ch);
         $handles[] = $ch;
@@ -1858,6 +1863,7 @@ function tc_probe_searx_many($urls, $query, $max, $timeoutMs = 6000) {
         );
         $ca = tc_cacert_path();
         if ($ca) $opts[CURLOPT_CAINFO] = $ca;
+        tc_curl_apply_proxy($opts);
         curl_setopt_array($ch, $opts);
         curl_multi_add_handle($mh, $ch);
         $handles[$i] = array('ch' => $ch, 'base' => $base);
@@ -2158,7 +2164,9 @@ function tc_api_admin_test_model() {
                 }
             }
         }
-        if ($apiKey === '') tc_fail(400, '请先填写 API Key');
+        // 空 Key 允许直连无鉴权上游(本地 Ollama / LM Studio 等),不再强制填写。
+        // 掩码占位符不是真实密钥:清掉,避免原样发给上游得到误导性的 401。
+        if (strpos($apiKey, '••') !== false) $apiKey = '';
         // 单次测试的超时(秒)。模型可能因上游慢/模型不存在而长时间不响应,
         // 允许管理员按需调小,便于批量测试时快速跳过不可用的模型。
         // 未传时用 25 秒;传了(含 0/负数)一律夹紧到 3~120,不再回退默认值 ——
@@ -2195,13 +2203,8 @@ function tc_api_admin_test_model() {
     $url = tc_upstream_path($ctx['baseUrl'], $ctx['format']);
     // 连通性测试同样会带服务端身份出站,内网目标一律拒绝。
     if (!tc_upstream_url_is_safe($url)) tc_fail(400, '不允许请求内网或保留地址');
-    $headers = array('Content-Type' => 'application/json', 'Accept' => 'application/json');
-    if ($ctx['format'] === 'anthropic') {
-        $headers['x-api-key'] = $ctx['apiKey'];
-        $headers['anthropic-version'] = '2023-06-01';
-    } else {
-        $headers['Authorization'] = 'Bearer ' . $ctx['apiKey'];
-    }
+    // 空 Key 表示上游无需鉴权,不发认证头(见 tc_upstream_auth_headers 的说明)
+    $headers = tc_upstream_auth_headers($ctx['format'], $ctx['apiKey'], false);
     $started = tc_now();
     $res = tc_http_request($url, 'POST', $headers, tc_json_encode($body), (int) $ctx['timeoutMs'], false);
     $ms = tc_now() - $started;
@@ -2272,8 +2275,8 @@ function tc_api_user_test_model() {
             if (is_array($m) && isset($m['id']) && $m['id'] === $model) { $found = true; break; }
         }
         if (!$found) tc_fail(403, '该模型不在供应商的已保存模型列表中');
-        $apiKey = trim((string) tc_provider_key($provider));
-        if ($apiKey === '') tc_fail(400, '该供应商没有可用的 API Key');
+        // 空 Key 允许(本地无鉴权上游);用 tc_provider_key_for_model 支持模型绑定的多 Key
+        $apiKey = trim((string) tc_provider_key_for_model($provider, $model));
         return array(
             'user' => $user,
             'provider' => $provider,
@@ -2317,13 +2320,8 @@ function tc_api_user_test_model() {
     $url = tc_upstream_path($baseUrl, $format);
     // 该接口允许直接传 baseUrl 试探连通性,同样不能成为探内网的跳板。
     if (!tc_upstream_url_is_safe($url)) tc_fail(400, '不允许请求内网或保留地址');
-    $headers = array('Content-Type' => 'application/json', 'Accept' => 'application/json');
-    if ($format === 'anthropic') {
-        $headers['x-api-key'] = $ctx['apiKey'];
-        $headers['anthropic-version'] = '2023-06-01';
-    } else {
-        $headers['Authorization'] = 'Bearer ' . $ctx['apiKey'];
-    }
+    // 空 Key 表示上游无需鉴权,不发认证头
+    $headers = tc_upstream_auth_headers($format, $ctx['apiKey'], false);
 
     $started = tc_now();
     $res = tc_http_request($url, 'POST', $headers, tc_json_encode($body), 25000, false);
@@ -2396,19 +2394,18 @@ function tc_api_fetch_models() {
                 }
             }
         }
-        if ($apiKey === '') tc_fail(400, '请先填写 API Key');
         // 掩码占位符不是真实密钥:带着它请求上游只会得到误导性的 401。
         // 常见于「编辑供应商 + 留空 Key」但 providerId 不匹配(非本人/已删除)的场景,本地直接给出可行动的提示。
         if (strpos($apiKey, '••') !== false) tc_fail(400, '请先填写 API Key（编辑已有供应商时留空即沿用已保存的密钥）');
+        // 空 Key 允许:本地无鉴权上游(如 Ollama / LM Studio)的 /v1/models 不需要密钥。
         $url = tc_api_url($baseUrl, '/models');
         // 这里带着服务端身份出站,且 baseUrl 直接来自请求体:必须过 SSRF 闸门。
         tc_upstream_guard($url);
         return array('url' => $url, 'apiKey' => $apiKey);
     });
-    $res = tc_http_request($ctx['url'], 'GET', array(
-        'Authorization' => 'Bearer ' . $ctx['apiKey'],
-        'Accept' => 'application/json',
-    ), null, 20000, false);
+    $listHdrs = array('Accept' => 'application/json');
+    if ($ctx['apiKey'] !== '') $listHdrs['Authorization'] = 'Bearer ' . $ctx['apiKey'];
+    $res = tc_http_request($ctx['url'], 'GET', $listHdrs, null, 20000, false);
     if (!$res['ok']) {
         tc_fail($res['code'] === 504 ? 504 : 502, tc_upstream_fail_message($res));
     }
@@ -3421,7 +3418,9 @@ function tc_generate_images($apiKeyOwner = null) {
     $imgKeyChain = tc_provider_key_chain($provider, $ctx['model']);
     if (!$imgKeyChain) $imgKeyChain = array('');
     $imgKeyIdx = 0;
-    $headers = array('Content-Type' => 'application/json', 'Authorization' => 'Bearer ' . $imgKeyChain[0]);
+    $headers = array('Content-Type' => 'application/json');
+    // 空 Key 表示上游无需鉴权,不发认证头(见 tc_upstream_auth_headers 的说明)
+    if ($imgKeyChain[0] !== '') $headers['Authorization'] = 'Bearer ' . $imgKeyChain[0];
     $body = array(
         'model' => $ctx['model'],
         'prompt' => $ctx['prompt'],
@@ -3496,7 +3495,8 @@ function tc_generate_images($apiKeyOwner = null) {
         // 换 Key:第一把认证/连接失败,而还有下一把时,用下一把重跑整条参数降级链
         if ($imgKeyIdx + 1 < count($imgKeyChain) && tc_key_failure_retryable($res)) {
             $imgKeyIdx++;
-            $headers['Authorization'] = 'Bearer ' . $imgKeyChain[$imgKeyIdx];
+            if ($imgKeyChain[$imgKeyIdx] !== '') $headers['Authorization'] = 'Bearer ' . $imgKeyChain[$imgKeyIdx];
+            else unset($headers['Authorization']);
             $seen = array(); $lastMsg = ''; $status = 0;
             if ($imgKeyAttempt < 8) continue;
         }
@@ -3844,6 +3844,8 @@ function tc_img_store_save($url, $maxBytes = 30 * 1024 * 1024) {
     ));
     $ca = tc_cacert_path();
     if ($ca) curl_setopt($ch, CURLOPT_CAINFO, $ca);
+    $proxyOpts = array();
+    if (tc_curl_apply_proxy($proxyOpts)) curl_setopt_array($ch, $proxyOpts);
     $buf = ''; $tooBig = false; $ctype = '';
     curl_setopt($ch, CURLOPT_HEADERFUNCTION, function ($ch, $line) use (&$ctype) {
         if (stripos($line, 'content-type:') === 0) $ctype = trim(substr($line, 13));
@@ -3975,6 +3977,8 @@ function tc_api_image_proxy() {
     ));
     $ca = tc_cacert_path();
     if ($ca) curl_setopt($ch, CURLOPT_CAINFO, $ca);
+    $proxyOpts = array();
+    if (tc_curl_apply_proxy($proxyOpts)) curl_setopt_array($ch, $proxyOpts);
     $buf = '';
     $tooBig = false;
     $ctype = '';
@@ -4345,7 +4349,9 @@ function tc_generate_video($apiKeyOwner = null) {
     if (!$videoKeyChain) $videoKeyChain = array('');
     $videoKeyIdx = 0;
     $videoKey = $videoKeyChain[0];
-    $headers = array('Content-Type' => 'application/json', 'Authorization' => 'Bearer ' . $videoKey);
+    $headers = array('Content-Type' => 'application/json');
+    // 空 Key 表示上游无需鉴权,不发认证头
+    if ($videoKey !== '') $headers['Authorization'] = 'Bearer ' . $videoKey;
     $body = array(
         'model' => $ctx['model'],
         'prompt' => $ctx['prompt'],
@@ -4366,7 +4372,8 @@ function tc_generate_video($apiKeyOwner = null) {
         if ($videoKeyIdx + 1 < count($videoKeyChain) && tc_key_failure_retryable($res)) {
             $videoKeyIdx++;
             $videoKey = $videoKeyChain[$videoKeyIdx];
-            $headers['Authorization'] = 'Bearer ' . $videoKey;
+            if ($videoKey !== '') $headers['Authorization'] = 'Bearer ' . $videoKey;
+            else unset($headers['Authorization']);
             continue;
         }
         break;
@@ -4396,7 +4403,9 @@ function tc_generate_video($apiKeyOwner = null) {
         while (time() < $deadline) {
             usleep(1500000);
             $q = $pollUrl . '?video_id=' . rawurlencode($videoId) . '&model_name=' . rawurlencode($ctx['model']);
-            $pr = tc_http_request($q, 'GET', array('Authorization' => 'Bearer ' . $videoKey, 'Accept' => 'application/json'), null, 20000, false);
+            $pollHdrs = array('Accept' => 'application/json');
+            if ($videoKey !== '') $pollHdrs['Authorization'] = 'Bearer ' . $videoKey;
+            $pr = tc_http_request($q, 'GET', $pollHdrs, null, 20000, false);
             if (empty($pr['ok']) || (int) $pr['status'] >= 400) continue; // 短暂失败不致命,继续轮询
             $pj = json_decode((string) $pr['body'], true);
             if (!is_array($pj)) continue;
@@ -4494,6 +4503,8 @@ function tc_api_video_proxy() {
     ));
     $ca = tc_cacert_path();
     if ($ca) curl_setopt($ch, CURLOPT_CAINFO, $ca);
+    $proxyOpts = array();
+    if (tc_curl_apply_proxy($proxyOpts)) curl_setopt_array($ch, $proxyOpts);
     $up = array();
     curl_setopt($ch, CURLOPT_HEADERFUNCTION, function ($ch, $line) use (&$up) {
         $t = trim($line);

@@ -135,6 +135,11 @@ swapped=$(curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type
 assert_contains "阈值颠倒自动纠正(ok)" "$swapped" '"healthOkMin":30'
 assert_contains "阈值颠倒自动纠正(warn)" "$swapped" '"healthWarnMin":29'
 curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"healthOkMin":75,"healthWarnMin":40}' > /dev/null
+# 内网上游开关:默认关闭(不下发 true),保存后回读为 true,可再关回 false
+assert_contains "内网上游开关默认关闭" "$(curl -s "$BASE/api/admin/settings" -H "$AUTH")" '"allowPrivateUpstream":false'
+assert_contains "内网上游开关可开启" "$(curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"allowPrivateUpstream":true}')" '"allowPrivateUpstream":true'
+assert_contains "内网上游开关可回读开启" "$(curl -s "$BASE/api/admin/settings" -H "$AUTH")" '"allowPrivateUpstream":true'
+assert_contains "内网上游开关可关回" "$(curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"allowPrivateUpstream":false}')" '"allowPrivateUpstream":false'
 empty_ann=$(curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"announcement":{"enabled":true,"text":""}}')
 assert_contains "空公告启用被拒" "$empty_ann" '启用公告时请填写公告内容'
 # 协议页(启用后)
@@ -192,6 +197,14 @@ sed -i "s/MOCKPORT/$MOCK_PORT/" "$TMP/prov.json"
 curl -s -X POST "$BASE/api/providers" -H "$AUTH" -H "Content-Type: application/json" -d @"$TMP/prov.json" > /dev/null
 PROV=$(curl -s "$BASE/api/providers" -H "$AUTH" | grep -o '"id":"[a-f0-9]*","name":"Mock"' | cut -d'"' -f4)
 [ -n "$PROV" ] && ok "创建全局供应商" || bad "创建全局供应商"
+# 无 Key 供应商:面向本地 Ollama / LM Studio 等无鉴权上游,保存时不再强制填 Key。
+# mock 的对话接口不校验鉴权,因此无 Key 也应能正常拿到回复(证明空 Key 不会发认证头)。
+# 计 0 元,避免影响后面的额度断言。
+NOKEYPROV=$(curl -s -X POST "$BASE/api/providers" -H "$AUTH" -H "Content-Type: application/json" -d '{"name":"NoKey","baseUrl":"http://127.0.0.1:'"$MOCK_PORT"'/v1","apiFormat":"chat","models":[{"id":"mock-model","name":"Mock"}],"scope":"global","costPerCall":0}')
+assert_contains "无 Key 供应商可保存" "$NOKEYPROV" '"name":"NoKey"'
+assert_has "无 Key 供应商 hasKey 为假" "$NOKEYPROV" '"hasKey":false'
+NOKEYID=$(printf '%s' "$NOKEYPROV" | python -c "import sys,json;print(json.load(sys.stdin)['provider']['id'])")
+assert_contains "无 Key 供应商可正常对话" "$(curl -s -X POST "$BASE/api/proxy/chat" -H "$UAUTH" -H "Content-Type: application/json" -d '{"providerId":"'"$NOKEYID"'","model":"mock-model","messages":[{"role":"user","content":"hi"}]}')" 'MOCK-REPLY'
 # 用户组 ID 必须跨请求稳定(否则授权规则会全部失效)
 GID1=$(curl -s "$BASE/api/admin/groups" -H "$AUTH" | grep -o '"groups":\[{"id":"[a-f0-9]*"' | head -1 | cut -d'"' -f6)
 GID2=$(curl -s "$BASE/api/admin/groups" -H "$AUTH" | grep -o '"groups":\[{"id":"[a-f0-9]*"' | head -1 | cut -d'"' -f6)
@@ -551,7 +564,9 @@ assert_contains "获取模型: 粘贴完整 /v1/models 不重复拼接" "$(curl 
 printf '{"baseUrl":"http://127.0.0.1:%s/v1","apiKey":"%s","providerId":"%s","apiFormat":"chat"}' "$MOCK_PORT" "$MASKEDKEY" "$PROV" > "$TMP/masked.json"
 assert_contains "获取模型: 掩码 Key 回退存储密钥(管理员)" "$(curl -s -X POST "$BASE/api/proxy/fetch-models" -H "$AUTH" -H "Content-Type: application/json" -d @"$TMP/masked.json")" 'mock-model'
 assert_contains "获取模型: Anthropic 明确提示手填" "$(curl -s -X POST "$BASE/api/proxy/fetch-models" -H "$UAUTH" -H "Content-Type: application/json" -d '{"baseUrl":"https://api.anthropic.com","apiKey":"x","apiFormat":"anthropic"}')" '手动填写'
-assert_contains "获取模型: 缺 Key 且无 providerId 拒绝" "$(curl -s -X POST "$BASE/api/proxy/fetch-models" -H "$UAUTH" -H "Content-Type: application/json" -d '{"baseUrl":"http://127.0.0.1:'"$MOCK_PORT"'/v1","apiKey":"","apiFormat":"chat"}')" '请先填写 API Key'
+# 缺 Key 不再被本地拒绝:面向无鉴权上游(本地 Ollama / LM Studio 等),直接带空 Key 请求上游。
+# mock 的 /models 不校验鉴权,因此应当成功返回模型列表(证明「不强制填 Key」这条链路打通)。
+assert_contains "获取模型: 缺 Key 直连无鉴权上游成功" "$(curl -s -X POST "$BASE/api/proxy/fetch-models" -H "$UAUTH" -H "Content-Type: application/json" -d '{"baseUrl":"http://127.0.0.1:'"$MOCK_PORT"'/v1","apiKey":"","apiFormat":"chat"}')" 'mock-model'
 printf '{"baseUrl":"http://127.0.0.1:%s/v1","apiKey":"%s","providerId":"not-exist","apiFormat":"chat"}' "$MOCK_PORT" "$MASKEDKEY" > "$TMP/masked2.json"
 assert_contains "获取模型: 掩码 Key 无匹配 providerId 快速失败" "$(curl -s -X POST "$BASE/api/proxy/fetch-models" -H "$UAUTH" -H "Content-Type: application/json" -d @"$TMP/masked2.json")" '沿用已保存的密钥'
 assert_contains "获取模型: 不可达主机可定位" "$(curl -s -X POST "$BASE/api/proxy/fetch-models" -H "$UAUTH" -H "Content-Type: application/json" -d '{"baseUrl":"http://127.0.0.1:9/nope/v1","apiKey":"x","apiFormat":"chat"}')" '无法连接上游'
@@ -654,6 +669,8 @@ assert_has "演示管理员看不到 SMTP 密码" "$DEMOSET" '"password":""'
 assert_has "演示管理员看不到 SMTP 用户名" "$DEMOSET" '"username":""'
 assert_has "演示管理员收到 SMTP 受限标记" "$DEMOSET" '"smtpRestricted":true'
 assert_contains "演示管理员不可写入 SMTP 配置" "$(curl -s -X POST "$BASE/api/admin/settings" -H "$DAUTH" -H "Content-Type: application/json" -d '{"smtp":{"host":"evil.local","port":25,"username":"x","password":"pwn","encryption":"none","fromEmail":"x@evil.local"}}')" '演示管理员不能修改邮件(SMTP)配置'
+# 内网上游开关属安全设置,演示身份同样不可改(回滚前已能用来探测内网)
+assert_contains "演示管理员不可改内网访问设置" "$(curl -s -X POST "$BASE/api/admin/settings" -H "$DAUTH" -H "Content-Type: application/json" -d '{"allowPrivateUpstream":true}')" '演示管理员不能修改内网访问设置'
 assert_contains "演示管理员不可取回 SMTP 明文密码" "$(curl -s -X POST "$BASE/api/admin/settings/smtp-reveal" -H "$DAUTH")" '演示管理员不可查看邮件(SMTP)密码'
 # 真实管理员:勾选「保持显示」后自己可读可复制,取消勾选则只给掩码且拒绝取回
 assert_has "勾选保持显示后下发 SMTP 明文" "$(curl -s "$BASE/api/admin/settings" -H "$AUTH")" '"password":"E2eSmtpSecret"'

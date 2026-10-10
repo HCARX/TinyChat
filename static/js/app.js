@@ -6335,8 +6335,7 @@ if (pFetchBtn) {
     const apiKey = $('p-key').value.trim();
     const apiFormat = $('p-format').getAttribute('data-value') || 'chat';
     if (!baseUrl) { toast('请先填写 Base URL', true); return; }
-    // 编辑已有供应商时 Key 允许留空(保持原 Key):带上 providerId 让服务端回退用存储的密钥
-    if (!apiKey && !providerEditingId) { toast('请先填写 API Key', true); return; }
+    // Key 可留空:编辑已有供应商时留空即沿用已保存密钥;新建时留空按无鉴权上游处理。
     pFetchBtn.disabled = true;
     pFetchBtn.textContent = '获取中…';
     try {
@@ -6416,7 +6415,7 @@ $('p-save').addEventListener('click', async () => {
   const keyRevealable = !!(($('p-key-keep') && $('p-key-keep').checked));
   const editing = !!providerEditingId;
   if (!baseUrl) { toast('请填写 Base URL', true); return; }
-  if (!editing && !apiKey) { toast('请填写 API Key', true); return; }
+  // API Key 可留空:本地 Ollama / LM Studio 等无鉴权上游不需要 Key。
   const models = pModelList ? pModelList.getEnabled() : [];
   if (!models.length) { toast('请先获取模型并至少勾选一个', true); return; }
 
