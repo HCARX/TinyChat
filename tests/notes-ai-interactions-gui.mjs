@@ -241,7 +241,16 @@ console.log('\n== 4. 选中文字 AI 编辑先弹对照预览,应用后才写回
   const aiBtn = cmenu.locator('[data-ai]').first();
   check('至少有 1 个可用的 AI 动作(默认启用内置动作)', await aiBtn.count() >= 1);
   await aiBtn.click();
+  // 等模型返回那几秒必须有可见进度条,否则「点了没反应」。
+  await page.waitForSelector('.notes-ai-busy', { timeout: 4000 }).catch(() => {});
+  const busy = page.locator('.notes-ai-busy');
+  check('右键执行后立即出现进度条(不再像点了没反应)', await busy.count() >= 1);
+  if (await busy.count()) {
+    check('进度条带不确定动画条', await page.locator('.notes-ai-busy .nab-bar').count() >= 1);
+    check('进度条文案标明正在执行的动作', (await busy.first().innerText()).includes('AI 正在'));
+  }
   await sleep(2800);
+  check('模型返回后进度条自动消失', await page.locator('.notes-ai-busy').count() === 0);
   const diff = page.locator('.notes-tidy-modal');
   check('AI 编辑弹出左右对照预览(此前是直接插入)', await diff.count() === 1);
   if (await diff.count() === 1) {
@@ -257,6 +266,53 @@ console.log('\n== 4. 选中文字 AI 编辑先弹对照预览,应用后才写回
     // 且模型结果落在原选中位置(在「第二段」之前)。
     check('选中处被替换(原「容器查询」不再出现)', !valAfter.includes('容器查询'));
     check('模型结果落在原选中位置', valAfter.indexOf('MOCK-REPLY') >= 0 && valAfter.indexOf('MOCK-REPLY') < valAfter.indexOf('第二段'));
+  } else {
+    bad('未弹出对照预览,跳过后续断言');
+  }
+}
+
+// ============ 4b. 「在选中后追加」保留原文,结果落到选中文字之后 ============
+console.log('\n== 4b. 对照面板的「在选中后追加」按钮:保留原文,结果插到选中之后 ==');
+{
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForFunction(() => document.documentElement.getAttribute('data-boot') === 'done', null, { timeout: 30000 });
+  await page.evaluate(() => window.OCNotes.open());
+  await page.waitForSelector('.notes-fs', { timeout: 20000 });
+  await sleep(600);
+  await page.locator('.notes-side .nt-note').first().click();
+  await sleep(900);
+  const ta = page.locator('#ne-ta');
+  await page.evaluate(() => {
+    const t = document.querySelector('#ne-ta');
+    t.focus();
+    const i = t.value.indexOf('第二段');   // 上一节只替换了「容器查询」,「第二段」仍在
+    t.setSelectionRange(i, i + 3);
+  });
+  const before = await ta.inputValue();
+  await page.evaluate(() => {
+    const t = document.querySelector('#ne-ta');
+    const r = t.getBoundingClientRect();
+    t.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.left + 40, clientY: r.top + 40 }));
+  });
+  await sleep(400);
+  await page.locator('.notes-ctx-menu [data-ai]').first().click();
+  await sleep(2800);
+  const diff = page.locator('.notes-tidy-modal');
+  check('对照预览弹出', await diff.count() === 1);
+  if (await diff.count() === 1) {
+    const alt = diff.locator('#tidy-alt');
+    check('面板底部有「在选中后追加」按钮', await alt.count() === 1);
+    check('按钮文案为「在选中后追加」', (await alt.innerText()).includes('在选中后追加'));
+    check('应用前正文未被改动', await ta.inputValue() === before);
+    await alt.click();
+    await sleep(900);
+    const valAfter = await ta.inputValue();
+    check('追加后正文变长', valAfter.length > before.length);
+    check('原选中文字仍在(追加不是替换)', valAfter.includes('第二段'));
+    // 上一节已在正文前部留下一个 MOCK-REPLY,这里要看的是「第二段之后」那一段;
+    // 复用整串 indexOf 会命中旧的那个,必须取选中文字之后的子串来判断。
+    const tail = valAfter.slice(valAfter.indexOf('第二段') + '第二段'.length);
+    check('模型结果落在选中文字之后', tail.includes('MOCK-REPLY'));
   } else {
     bad('未弹出对照预览,跳过后续断言');
   }

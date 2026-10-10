@@ -1010,29 +1010,63 @@
 .ncm-item i { font-style: normal; font-size: 0.786em; color: var(--text-tertiary); }
 .ncm-empty { font-size: 0.857em; color: var(--text-tertiary); padding: 8px 10px; }
 
-/* AI 处理中的浮标(右下角,不遮挡正在编辑的区域) */
+/* AI 处理中的进度条(顶部居中,盖在正文之上)。
+   此前是右下角小胶囊,等模型返回那几秒几乎看不见,用户以为「点了没反应」;
+   现在顶部一张醒目卡片 + 不确定进度条,并把动作名显示出来。 */
 .notes-ai-busy {
   position: absolute;
-  right: 18px;
-  bottom: 18px;
-  z-index: 40;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 9px 14px;
-  font-size: 0.893em;
-  color: var(--text-secondary);
+  left: 50%;
+  top: 14px;
+  transform: translateX(-50%);
+  z-index: 60;
+  width: min(360px, calc(100% - 28px));
+  pointer-events: none;
+  animation: nabIn .18s ease-out;
+}
+.nab-card {
   background: var(--bg-surface);
   border: 1px solid var(--hairline);
-  border-radius: 999px;
+  border-radius: 12px;
   box-shadow: var(--shadow-md);
+  padding: 11px 14px 10px;
+}
+.nab-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 0.929em;
+  color: var(--text);
+}
+.nab-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nab-track {
+  position: relative;
+  margin-top: 9px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--bg-hover);
+  overflow: hidden;
+}
+.nab-bar {
+  position: absolute;
+  top: 0; bottom: 0;
+  width: 38%;
+  border-radius: 999px;
+  background: var(--accent);
+  animation: nabSlide 1.15s ease-in-out infinite;
 }
 .nab-spin {
-  width: 12px; height: 12px;
+  flex: 0 0 auto;
+  width: 13px; height: 13px;
   border-radius: 50%;
   border: 2px solid var(--bg-hover);
   border-top-color: var(--accent);
   animation: naiSpin .8s linear infinite;
+}
+@keyframes nabIn { from { opacity: 0; transform: translate(-50%, -6px); } to { opacity: 1; transform: translate(-50%, 0); } }
+@keyframes nabSlide { 0% { left: -38%; } 100% { left: 100%; } }
+@media (prefers-reduced-motion: reduce) {
+  .nab-bar { animation-duration: 3s; }
+  .notes-ai-busy { animation: none; }
 }
 
 
@@ -1224,6 +1258,10 @@
 .tidy-pane .msg { padding: 8px 0; }
 @media (max-width: 820px) {
   .notes-tidy-body { grid-template-columns: 1fr; }
+  /* 选区 AI 编辑的对照面板底栏有三枚按钮(放弃 / 在选中后追加 / 替换选中内容),
+     nowrap + 按钮 flex:0 0 auto 在窄屏会横向溢出右缘,允许换行并把按钮撑满更好点。 */
+  .notes-tidy-modal .modal-footer { flex-wrap: wrap; }
+  .notes-tidy-modal .modal-footer .btn { flex: 1 1 auto; min-height: 40px; justify-content: center; }
 }
 
 /* ---------- 顶栏 AI 按钮 ---------- */

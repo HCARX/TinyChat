@@ -1260,7 +1260,8 @@
       ], 4096);
       const clean = String(out || '').trim().replace(/^```[a-zA-Z]*\n?|\n?```$/g, '').trim();
       if (!clean) throw new Error('模型没有返回内容');
-      // 先预览对照,确认后才替换 —— 改写是破坏性的,不给后悔机会比直接插入安全得多
+      // 先预览对照,确认后才写回 —— 改写是破坏性的,不给后悔机会比直接插入安全得多。
+      // 两个出口:主按钮替换掉选中文字,次按钮把结果追加在选中文字之后(保留原文)。
       showAiDiff({
         title: label + '预览',
         oldHead: '修改前（选中内容）',
@@ -1280,6 +1281,19 @@
             replaceRange(at, en, clean);
           }
           toast(label + '完成（可 Ctrl+Z 撤销）');
+        },
+        alt: {
+          label: '在选中后追加',
+          apply: () => {
+            const ta = N.editor && N.editor.ta;
+            if (!ta) return;
+            const at = sel && typeof sel.start === 'number' ? sel.start : null;
+            const en = sel && typeof sel.end === 'number' ? sel.end : null;
+            // 追加到选中文字之后;定位已失效时退回光标处,而不是扔到文末
+            const pos = (at === null || en === null || ta.value.slice(at, en) !== text) ? ta.selectionEnd : en;
+            insertAtCursor('\n\n' + clean + '\n', pos);
+            toast(label + '已追加在选中内容之后（可 Ctrl+Z 撤销）');
+          },
         },
       });
     } catch (e) {
@@ -1446,10 +1460,12 @@
   // AI 改写对照预览:左「修改前」右「修改后」,确认后才写回。
   // 原先只服务「自动整理」(showTidyPreview),现在同时用于选中文字的 AI 编辑与
   // 写入摘要/生成大纲等全文动作 —— 改动落盘前先让用户看见改成什么样。
-  // opts: { title, oldHead, newHead, oldText, newText, applyLabel, apply }
+  // opts: { title, oldHead, newHead, oldText, newText, applyLabel, apply, alt }
   //   apply() 省略时按「整篇正文替换为 newText」处理。
+  //   alt = { label, apply } 时多给一个次要动作按钮(如「在选中后追加」)。
   function showAiDiff(opts) {
     const o = opts || {};
+    const alt = o.alt && typeof o.alt.apply === 'function' ? o.alt : null;
     const mask = document.createElement('div');
     mask.className = 'modal-mask notes-tidy-mask hidden';
     mask.innerHTML =
@@ -1461,6 +1477,7 @@
       + '</div>'
       + '<div class="modal-footer">'
       + '<button class="btn" data-close type="button">放弃</button>'
+      + (alt ? '<button class="btn" id="tidy-alt" type="button">' + esc(alt.label || '追加') + '</button>' : '')
       + '<button class="btn primary" id="tidy-apply" type="button">' + esc(o.applyLabel || '应用修改') + '</button>'
       + '</div></div>';
     document.body.appendChild(mask);
@@ -1484,11 +1501,10 @@
       mask.querySelector('#tidy-old').textContent = oldText;
       mask.querySelector('#tidy-new').textContent = newText;
     }
-    mask.querySelector('#tidy-apply').addEventListener('click', () => {
-      if (settled) return;
-      if (typeof o.apply === 'function') o.apply();
-      done();
-    });
+    const runAction = (fn) => { if (settled) return; if (typeof fn === 'function') fn(); done(); };
+    mask.querySelector('#tidy-apply').addEventListener('click', () => runAction(o.apply));
+    const altBtn = mask.querySelector('#tidy-alt');
+    if (altBtn) altBtn.addEventListener('click', () => runAction(alt.apply));
     if (window.OCUI) window.OCUI.openModal(mask);
     else mask.classList.add('show');
     return { close: done };
@@ -1756,11 +1772,19 @@
     return map.length ? map : null;
   }
 
-  // 处理中的浮标(右下角,不遮挡编辑)
+  // AI 处理中的进度条(顶部居中)。
+  // 之前是右下角一枚小胶囊,等模型返回的那几秒里几乎看不出在跑,用户以为「点了没反应」;
+  // 现在改成顶部醒目卡片 + 不确定进度条,并把调用它的动作名显示出来。
   function showAiBusy(label) {
     const el = document.createElement('div');
     el.className = 'notes-ai-busy';
-    el.innerHTML = '<span class="nab-spin"></span>AI 正在' + esc(label) + '…';
+    el.setAttribute('role', 'status');
+    el.setAttribute('aria-live', 'polite');
+    el.innerHTML =
+      '<div class="nab-card">'
+      + '<div class="nab-row"><span class="nab-spin"></span><span class="nab-text">AI 正在' + esc(label) + '…</span></div>'
+      + '<div class="nab-track"><span class="nab-bar"></span></div>'
+      + '</div>';
     (N.els.mask || document.body).appendChild(el);
     return el;
   }
