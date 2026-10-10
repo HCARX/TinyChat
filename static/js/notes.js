@@ -1109,7 +1109,8 @@
   }
 
   // ============ 正文选区右键:AI 编辑 ============
-  // 结果插到选中文字之后(前后各留一个换行),原选中内容保持不变。
+  // 选区先在源码里定位(sel = {start,end}),结果走对照预览;确认后替换这段选区。
+  // 定位不到(preview-only)时只提供常用编辑,AI 项禁用并说明原因。
   let aiCtxMenu = null;
   function closeAiCtxMenu() {
     if (aiCtxMenu) { aiCtxMenu.remove(); aiCtxMenu = null; }
@@ -1204,11 +1205,11 @@
       + icon(t.icon, 14) + '</button>').join('') + '</div>';
   }
 
-  function openAiCtxMenu(x, y, text, start, end) {
+  function openAiCtxMenu(x, y, text, sel) {
     closeAiCtxMenu();
-    // 预览区选中但无法回定位到源文时:只提供常用编辑,AI 项禁用并说明原因
-    const acts = (end === 'preview-only') ? [] : aiActions().filter((a) => a.enabled);
-    const previewOnly = end === 'preview-only';
+    // sel: 源码中的 [start,end) 区间;end === 'preview-only' 表示定位失败
+    const previewOnly = sel === 'preview-only';
+    const acts = previewOnly ? [] : aiActions().filter((a) => a.enabled);
     const menu = document.createElement('div');
     menu.className = 'notes-ctx-menu';
     menu.innerHTML = ctxToolbarHtml()
@@ -1239,23 +1240,19 @@
         e.preventDefault();
         e.stopPropagation();
         closeAiCtxMenu();
-        runAiEdit(b.dataset.ai, text, start, end);
+        runAiEdit(b.dataset.ai, text, sel);
       });
     });
   }
 
-  async function runAiEdit(key, text, start, end) {
+  async function runAiEdit(key, text, sel) {
     if (!window.OCApp || !window.OCApp.aiComplete) { toast('AI 能力尚未就绪，请刷新页面', true); return; }
     const noteId = N.editor && N.editor.noteId;
     const n = noteById(noteId);
     if (!n) return;
     const act = aiActions().find((a) => a.key === key);
-    // 占位标记:先把光标位置放好,结束后直接替换占位
-    const ta = N.editor.ta;
-    const marker = '\n\n<!--AI:' + Date.now().toString(36) + '-->\n';
-    insertAtCursor(marker, end);
-    setSaveState('editing');
-    const busy = showAiBusy(act ? act.label : '处理');
+    const label = act ? act.label : 'AI 编辑';
+    const busy = showAiBusy(label);
     try {
       const out = await aiRun('note-edit', [
         { role: 'system', content: '你是严谨的中文写作助手。只按用户要求处理文本并直接输出结果，不要解释过程。' },
@@ -1263,15 +1260,46 @@
       ], 4096);
       const clean = String(out || '').trim().replace(/^```[a-zA-Z]*\n?|\n?```$/g, '').trim();
       if (!clean) throw new Error('模型没有返回内容');
-      replaceMarker(marker, '\n\n' + clean + '\n');
-      toast((act ? act.label : 'AI 编辑') + '完成');
+      // 先预览对照,确认后才替换 —— 改写是破坏性的,不给后悔机会比直接插入安全得多
+      showAiDiff({
+        title: label + '预览',
+        oldHead: '修改前（选中内容）',
+        oldText: text,
+        newHead: '修改后',
+        newText: clean,
+        applyLabel: '替换选中内容',
+        apply: () => {
+          const ta = N.editor && N.editor.ta;
+          if (!ta) return;
+          const at = sel && typeof sel.start === 'number' ? sel.start : null;
+          const en = sel && typeof sel.end === 'number' ? sel.end : null;
+          // 选中区间在预览期间若已变化(极端情况),退回光标处插入,避免错位覆盖
+          if (at === null || en === null || ta.value.slice(at, en) !== text) {
+            insertAtCursor(clean, ta.selectionEnd);
+          } else {
+            replaceRange(at, en, clean);
+          }
+          toast(label + '完成（可 Ctrl+Z 撤销）');
+        },
+      });
     } catch (e) {
-      removeMarker(marker);
       toast('AI 编辑失败：' + (e.message || '请稍后重试'), true);
     } finally {
       busy.remove();
       setSaveState('editing');
     }
+  }
+
+  // 用 text 替换源码 [start,end) 区间,并把光标落到替换内容之后
+  function replaceRange(start, end, text) {
+    const ta = N.editor && N.editor.ta;
+    if (!ta) return;
+    ta.value = ta.value.slice(0, start) + text + ta.value.slice(end);
+    ta.selectionStart = ta.selectionEnd = start + text.length;
+    N.editor.dirty = true;
+    pushHistory({ force: true });
+    renderPreview(ta.value);
+    scheduleSaveSoon();
   }
 
   // 在指定位置插入文本,并把光标移到插入内容之后
@@ -1285,26 +1313,6 @@
     pushHistory({ force: true });
     renderPreview(ta.value);
     scheduleSaveSoon();
-  }
-  function replaceMarker(marker, text) {
-    const ta = N.editor && N.editor.ta;
-    if (!ta) return;
-    const i = ta.value.indexOf(marker);
-    if (i < 0) { insertAtCursor(text, ta.selectionEnd); return; }
-    ta.value = ta.value.slice(0, i) + text + ta.value.slice(i + marker.length);
-    ta.selectionStart = ta.selectionEnd = i + text.length;
-    N.editor.dirty = true;
-    pushHistory({ force: true });
-    renderPreview(ta.value);
-    scheduleSaveSoon();
-  }
-  function removeMarker(marker) {
-    const ta = N.editor && N.editor.ta;
-    if (!ta) return;
-    const i = ta.value.indexOf(marker);
-    if (i < 0) return;
-    ta.value = ta.value.slice(0, i) + ta.value.slice(i + marker.length);
-    renderPreview(ta.value);
   }
   function scheduleSaveSoon() {
     if (!N.editor) return;
@@ -1384,20 +1392,32 @@
       const clean = stripFence(out);
       if (!clean) throw new Error('模型没有返回内容');
       if (kind === 'tidy') { showTidyPreview(n, clean); return; }
-      if (kind === 'summary') {
-        const cur = noteById(n.id);
-        const head = '> **摘要**：' + clean.replace(/\n+/g, ' ').trim() + '\n\n';
-        updateNote(n.id, { content: head + (cur ? cur.content : text) });
-        saveEditorSoon(n.id);
-        toast('摘要已写入正文开头');
-        return;
-      }
-      // outline / todos / links 追加到文末
+      // 写入摘要 / 大纲 / 待办 / 双链都会改写整篇正文:先预览对照再应用
       const cur = noteById(n.id);
-      const block = '\n\n## ' + (DOC_AI_HEAD[kind] || 'AI 生成') + '\n\n' + clean + '\n';
-      updateNote(n.id, { content: (cur ? cur.content : text) + block });
-      saveEditorSoon(n.id);
-      toast((DOC_AI_LABEL[kind] || 'AI') + '已完成');
+      const base = cur ? cur.content : text;
+      let next = '';
+      let applyLabel = '应用';
+      if (kind === 'summary') {
+        next = '> **摘要**：' + clean.replace(/\n+/g, ' ').trim() + '\n\n' + base;
+        applyLabel = '写入摘要';
+      } else {
+        next = base + '\n\n## ' + (DOC_AI_HEAD[kind] || 'AI 生成') + '\n\n' + clean + '\n';
+        applyLabel = (DOC_AI_LABEL[kind] || 'AI') + '结果追加到文末';
+      }
+      showAiDiff({
+        title: (DOC_AI_LABEL[kind] || 'AI') + '预览',
+        oldText: base,
+        newText: next,
+        applyLabel: applyLabel,
+        apply: () => {
+          const c = noteById(n.id);
+          updateNote(n.id, { content: kind === 'summary'
+            ? '> **摘要**：' + clean.replace(/\n+/g, ' ').trim() + '\n\n' + (c ? c.content : base)
+            : (c ? c.content : base) + '\n\n## ' + (DOC_AI_HEAD[kind] || 'AI 生成') + '\n\n' + clean + '\n' });
+          saveEditorSoon(n.id);
+          toast((DOC_AI_LABEL[kind] || 'AI') + '已完成（可 Ctrl+Z 撤销）');
+        },
+      });
     } catch (e) {
       toast('AI 操作失败：' + (e.message || '请稍后重试'), true);
     } finally {
@@ -1423,43 +1443,72 @@
     renderTree();
   }
 
-  // 建议6:自动整理 → 预览对比后再应用
-  function showTidyPreview(n, newContent) {
+  // AI 改写对照预览:左「修改前」右「修改后」,确认后才写回。
+  // 原先只服务「自动整理」(showTidyPreview),现在同时用于选中文字的 AI 编辑与
+  // 写入摘要/生成大纲等全文动作 —— 改动落盘前先让用户看见改成什么样。
+  // opts: { title, oldHead, newHead, oldText, newText, applyLabel, apply }
+  //   apply() 省略时按「整篇正文替换为 newText」处理。
+  function showAiDiff(opts) {
+    const o = opts || {};
     const mask = document.createElement('div');
     mask.className = 'modal-mask notes-tidy-mask hidden';
     mask.innerHTML =
       '<div class="modal modal-lg notes-tidy-modal" role="dialog" aria-modal="true">'
-      + '<div class="modal-header"><h3>' + icon('spark', 15) + ' 自动整理预览</h3></div>'
+      + '<div class="modal-header"><h3>' + icon('spark', 15) + ' ' + esc(o.title || 'AI 修改预览') + '</h3></div>'
       + '<div class="modal-body notes-tidy-body">'
-      + '<div class="tidy-col"><div class="tidy-head">整理前</div><div class="tidy-pane md-prose msg assistant" id="tidy-old"></div></div>'
-      + '<div class="tidy-col"><div class="tidy-head">整理后</div><div class="tidy-pane md-prose msg assistant" id="tidy-new"></div></div>'
+      + '<div class="tidy-col"><div class="tidy-head">' + esc(o.oldHead || '修改前') + '</div><div class="tidy-pane md-prose msg assistant" id="tidy-old"></div></div>'
+      + '<div class="tidy-col"><div class="tidy-head">' + esc(o.newHead || '修改后') + '</div><div class="tidy-pane md-prose msg assistant" id="tidy-new"></div></div>'
       + '</div>'
       + '<div class="modal-footer">'
       + '<button class="btn" data-close type="button">放弃</button>'
-      + '<button class="btn primary" id="tidy-apply" type="button">应用整理结果</button>'
+      + '<button class="btn primary" id="tidy-apply" type="button">' + esc(o.applyLabel || '应用修改') + '</button>'
       + '</div></div>';
     document.body.appendChild(mask);
-    const done = () => { window.OCUI.closeModal(mask); setTimeout(() => mask.remove(), 340); };
+    // settled 守卫:closeModal 会回调 _onClose,不能再进关闭流程(与其它弹窗同一纪律)
+    let settled = false;
+    const done = () => {
+      if (settled) return;
+      settled = true;
+      if (window.OCUI) window.OCUI.closeModal(mask);
+      setTimeout(() => mask.remove(), 340);
+    };
     mask._onClose = done;
     mask.querySelector('[data-close]').addEventListener('click', done);
     mask.addEventListener('mousedown', (e) => { if (e.target === mask) done(); });
+    const oldText = String(o.oldText == null ? '' : o.oldText);
+    const newText = String(o.newText == null ? '' : o.newText);
     if (window.OCRenderer) {
-      window.OCRenderer.renderInto(mask.querySelector('#tidy-old'), N.editor.ta.value);
-      window.OCRenderer.renderInto(mask.querySelector('#tidy-new'), newContent);
+      window.OCRenderer.renderInto(mask.querySelector('#tidy-old'), oldText);
+      window.OCRenderer.renderInto(mask.querySelector('#tidy-new'), newText);
     } else {
-      mask.querySelector('#tidy-old').textContent = N.editor.ta.value;
-      mask.querySelector('#tidy-new').textContent = newContent;
+      mask.querySelector('#tidy-old').textContent = oldText;
+      mask.querySelector('#tidy-new').textContent = newText;
     }
     mask.querySelector('#tidy-apply').addEventListener('click', () => {
-      const cur = noteById(n.id);
-      updateNote(n.id, { content: newContent });
-      saveEditorSoon(n.id);
+      if (settled) return;
+      if (typeof o.apply === 'function') o.apply();
       done();
-      toast('已应用整理结果（可 Ctrl+Z 撤销）');
-      void cur;
     });
     if (window.OCUI) window.OCUI.openModal(mask);
     else mask.classList.add('show');
+    return { close: done };
+  }
+
+  // 自动整理:整篇正文替换,走通用预览
+  function showTidyPreview(n, newContent) {
+    showAiDiff({
+      title: '自动整理预览',
+      oldText: N.editor.ta.value,
+      newText: newContent,
+      applyLabel: '应用整理结果',
+      apply: () => {
+        const cur = noteById(n.id);
+        updateNote(n.id, { content: newContent });
+        saveEditorSoon(n.id);
+        toast('已应用整理结果（可 Ctrl+Z 撤销）');
+        void cur;
+      },
+    });
   }
 
   // ---- 建议3:问笔记(关键词召回 + 引用来源) ----
@@ -1627,7 +1676,7 @@
   // 空态里常驻一份简版导航;首次进入再弹一次完整引导(加粗深色突出「可右键」)
   function usageGuideHtml() {
     return '<ul class="notes-guide">'
-      + '<li><b>选文字右键</b>，用 AI 扩写、总结、翻译、检查谬误或降低重复率。</li>'
+      + '<li><b>选文字右键</b>，用 AI 扩写、总结、翻译、检查谬误或降低重复率；结果先对照预览，确认后替换掉选中文字。</li>'
       + '<li><b>左下角齿轮</b>可自定义右键菜单里的动作（添加、删除、改名、改提示词）。</li>'
       + '<li><b>打「/」</b>插入模板，<b>按 Tab</b> 让 AI 续写下一句。</li>'
       + '<li><b>顶栏「问笔记」</b>基于全部笔记回答你的问题。</li>'
@@ -1647,7 +1696,7 @@
       + '<div class="modal-body">'
       + '<p class="ng-lead">这是一套可以用 AI 帮你写作的 Markdown 笔记。几个关键用法：</p>'
       + '<div class="ng-items">'
-      + '<div class="ng-item"><span class="ng-num">1</span><div><b>选中文字后右键</b>，让 AI 扩写 / 总结 / 翻译 / 检查谬误 / 降低重复率；结果会追加在选中文字后面，可随时 Ctrl+Z 撤销。</div></div>'
+      + '<div class="ng-item"><span class="ng-num">1</span><div><b>选中文字后右键</b>，让 AI 扩写 / 总结 / 翻译 / 检查谬误 / 降低重复率；结果先弹「修改前 / 修改后」对照，确认后才替换掉选中文字，可随时 Ctrl+Z 撤销。</div></div>'
       + '<div class="ng-item"><span class="ng-num">2</span><div><b>左下角齿轮</b>可以自定义这个右键菜单：添加自己的动作、改写提示词、停用不需要的。</div></div>'
       + '<div class="ng-item"><span class="ng-num">3</span><div><b>输入 / 或按 Tab</b>：斜杠插入模板，Tab 让 AI 接着写。</div></div>'
       + '<div class="ng-item"><span class="ng-num">4</span><div><b>顶栏「问笔记」</b>能基于你的全部笔记回答问题，并标出引用来源。</div></div>'
@@ -2129,7 +2178,14 @@
       { value: 'export', label: '导出 .md' },
       { value: 'delete', label: '删除笔记' },
     ];
-    window.OC.openSelect(more, items, {
+    // AI 动作单独成组:直接在列表上对某篇笔记跑,不必先打开
+    const aiItems = [
+      { value: 'ai-title', label: '生成标题 · 依正文起个题目' },
+      { value: 'ai-tags', label: '推荐标签 · 自动补充标签' },
+      { value: 'ai-summary', label: '生成摘要 · 写入正文开头' },
+    ];
+    const groups = [{ label: '', items: items }, { label: 'AI', items: aiItems }];
+    window.OC.openSelect(more, groups, {
       onSelect: async (v) => {
         if (v === 'pin') togglePin(n.id);
         else if (v === 'move') pickFolder((f) => moveNote(n.id, f));
@@ -2141,9 +2197,98 @@
         else if (v === 'delete') {
           const ok = await window.OCUI.confirm({ title: '删除笔记「' + n.title + '」？', message: '删除后其他设备也会同步删除。', danger: true, confirmText: '删除' });
           if (ok) deleteNote(n.id);
-        }
+        } else if (v === 'ai-title') void listAiTitle(n);
+        else if (v === 'ai-tags') void listAiTags(n);
+        else if (v === 'ai-summary') void listAiSummary(n);
       },
     });
+  }
+
+  // ---- 列表页 AI:直接对某篇笔记跑动作,无需先打开编辑器 ----
+  // 与编辑器内的同类动作共用提示词口径,但结果落到列表项字段(title / tags / content)。
+  function listAiBody(n) {
+    const c = noteById(n.id) || n;
+    return String(c.content || '');
+  }
+  async function listAiTitle(n) {
+    const body = listAiBody(n);
+    if (!body.trim()) { toast('这篇笔记还是空的，先写点内容吧', true); return; }
+    const busy = showAiBusy('生成标题');
+    try {
+      const out = await aiRun('note-title', [
+        { role: 'system', content: '你是笔记助手。只输出一个简短中文标题（不超过 20 字），不加书名号、不加引号、不要解释。' },
+        { role: 'user', content: '为下面这篇笔记起一个标题：\n\n' + body.slice(0, 6000) },
+      ], 100);
+      const title = stripFence(out).split('\n')[0].replace(/^["“”'']|["“”'']$/g, '').trim().slice(0, 60);
+      if (!title) throw new Error('模型没有返回标题');
+      const cur = noteById(n.id) || n;
+      const ok = await window.OCUI.confirm({
+        title: '使用这个标题？',
+        message: '原标题：' + (cur.title || '（无）') + '\n\n新标题：' + title,
+        confirmText: '替换',
+      });
+      if (!ok) { toast('已保留原标题'); return; }
+      updateNote(n.id, { title: title });
+      toast('标题已更新');
+    } catch (e) {
+      toast('生成标题失败：' + (e.message || '请稍后重试'), true);
+    } finally {
+      busy.remove();
+    }
+  }
+  async function listAiTags(n) {
+    const body = listAiBody(n);
+    if (!body.trim()) { toast('这篇笔记还是空的，先写点内容吧', true); return; }
+    const busy = showAiBusy('推荐标签');
+    try {
+      const out = await aiRun('note-tags', [
+        { role: 'system', content: '你是笔记助手。只输出 3-6 个简短中文标签，用中文逗号分隔，不要解释。' },
+        { role: 'user', content: '为下面这篇笔记推荐标签：\n\n' + body.slice(0, 6000) },
+      ], 200);
+      const tags = stripFence(out).split(/[,，、\n]/).map((x) => x.trim().replace(/^#/, '')).filter(Boolean).slice(0, 8);
+      if (!tags.length) throw new Error('没有解析出标签');
+      const cur = noteById(n.id) || n;
+      const merged = Array.from(new Set(((cur.tags) || []).concat(tags))).slice(0, 20);
+      updateNote(n.id, { tags: merged });
+      toast('已补充标签：' + tags.join('、'));
+    } catch (e) {
+      toast('推荐标签失败：' + (e.message || '请稍后重试'), true);
+    } finally {
+      busy.remove();
+    }
+  }
+  async function listAiSummary(n) {
+    const body = listAiBody(n);
+    if (!body.trim()) { toast('这篇笔记还是空的，先写点内容吧', true); return; }
+    const busy = showAiBusy('生成摘要');
+    try {
+      const out = await aiRun('note-doc', [
+        { role: 'system', content: '你是严谨的中文写作助手。只输出要求的内容本身，不要任何解释或额外前言。' },
+        { role: 'user', content: '请为下面这篇笔记写一段 100 字以内的摘要，直接输出摘要正文（不要「摘要：」前缀）。\n\n' + body.slice(0, 12000) },
+      ], 2048);
+      const clean = stripFence(out);
+      if (!clean) throw new Error('模型没有返回内容');
+      const cur = noteById(n.id) || n;
+      const base = String(cur.content || '');
+      const next = '> **摘要**：' + clean.replace(/\n+/g, ' ').trim() + '\n\n' + base;
+      showAiDiff({
+        title: '生成摘要预览',
+        oldText: base,
+        newText: next,
+        applyLabel: '写入摘要',
+        apply: () => {
+          // 若用户此刻正编辑这篇,走 saveEditorSoon 同步回编辑器(并进撤销历史);否则直接改数据
+          const editing = N.editor && N.editor.noteId === n.id;
+          updateNote(n.id, { content: next });
+          if (editing) { saveEditorSoon(n.id); toast('摘要已写入正文开头（可 Ctrl+Z 撤销）'); }
+          else toast('摘要已写入正文开头');
+        },
+      });
+    } catch (e) {
+      toast('生成摘要失败：' + (e.message || '请稍后重试'), true);
+    } finally {
+      busy.remove();
+    }
   }
 
   // 搜索索引:为每篇笔记缓存「小写化 + 去 Markdown 标记」的搜索文本,按 updatedAt 增量重建。
@@ -2313,7 +2458,7 @@
           const from = ta.selectionStart, to = ta.selectionEnd;
           if (from === to) return; // 没选文字,保留系统菜单
           e.preventDefault();
-          openAiCtxMenu(e.clientX, e.clientY, ta.value.slice(from, to), to, 'edit');
+          openAiCtxMenu(e.clientX, e.clientY, ta.value.slice(from, to), { start: from, end: to });
           return;
         }
         // 预览区:把选中的渲染文本回定位到 Markdown 源文,避免结果插到错误位置
@@ -2322,11 +2467,11 @@
         const hit = locateInSource(ta.value, picked);
         if (!hit) {
           e.preventDefault();
-          openAiCtxMenu(e.clientX, e.clientY, picked, null, 'preview-only');
+          openAiCtxMenu(e.clientX, e.clientY, picked, 'preview-only');
           return;
         }
         e.preventDefault();
-        openAiCtxMenu(e.clientX, e.clientY, ta.value.slice(hit.start, hit.end), hit.end, 'preview');
+        openAiCtxMenu(e.clientX, e.clientY, ta.value.slice(hit.start, hit.end), { start: hit.start, end: hit.end });
       });
     });
     // 点空白 / 滚动时收起右键菜单(document 级监听在 buildShell 里只挂一次)
