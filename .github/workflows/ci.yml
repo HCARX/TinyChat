@@ -100,6 +100,11 @@ jobs:
         run: php tests/html-text.php
       - name: 上游地址拼接自检(补 /v1 / 不重复)
         run: php tests/upstream-url.php
+      - name: 上游状态码回传自检(401/402/403 归一为 502 / 真登录失效仍 401)
+        # 本站也用 401/402/403 表达登录态/额度/权限,前端收到 401 会直接登出跳登录页。
+        # 把上游的同类码原样透传,「供应商 Key 填错」就会被误判成「登录过期」——
+        # 这类问题只在真发消息时出现,读 diff 看不出来,钉成契约挡回归。
+        run: php tests/upstream-status.php
       - name: 出站代理自检(scheme 映射 http/https/socks4/socks4a/socks5/socks5h / 非法串被拒 / 直连)
         # 代理只在「scheme -> CURLOPT_PROXYTYPE」这一处映射:少写一个 scheme 会让那类代理
         # 静默退化成 HTTP 代理(连不上又不报错),非法串则可能被原样塞进 curl。静态断言挡住回归。

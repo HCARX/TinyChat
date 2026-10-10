@@ -6,7 +6,7 @@ if (!defined('TC_ROOT')) {
     define('TC_ROOT', dirname(__DIR__));
 }
 
-define('TC_VERSION', '2.0.163');
+define('TC_VERSION', '2.0.164');
 // 单篇笔记正文上限(字符)。超出时接口明确报错而不是静默截断。
 define('TC_NOTE_MAX_CHARS', 500000);
 // 敏感词库上限(去重后的条数)。达到上限后新增词条被丢弃,单个词条本身不截断。
@@ -563,6 +563,18 @@ function tc_upstream_url_is_safe($url) {
     // 任一解析结果是内网/保留地址就拒绝:DNS 轮询可能让校验与请求落到不同 IP
     foreach ($ips as $ip) if (!$ipOk($ip)) return false;
     return true;
+}
+
+// 上游状态码在回传给本站客户端前必须先「洗一遍」。
+// 本站自己也会发这些码,且各有明确语义:401 = 当前登录态失效(前端据此登出并跳登录页),
+// 402 = 本站额度不足,403 = 本站权限不足。把上游的同类码原样透传,就会让「供应商密钥
+// 填错」这类与本站无关的原因被误当成「你的登录过期了」——用户在前台一发消息就被踢出登录。
+// 这类来自上游的认证/权限/配额失败一律归一到 502(上游网关失败),信息仍保留在错误文案里。
+// 429(限流)与 5xx 语义中立、不会被误读为本站登录态,保持原样。
+function tc_upstream_relay_status($status) {
+    $status = (int) $status;
+    if (in_array($status, array(401, 402, 403), true)) return 502;
+    return $status;
 }
 
 function tc_uid($len = 16) {

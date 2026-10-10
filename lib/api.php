@@ -5369,7 +5369,7 @@ function tc_api_parse_document() {
                 'provider' => $provider, 'model' => $mode, 'status' => isset($parsed['code']) ? (int) $parsed['code'] : 502,
                 'ms' => $ms, 'cost' => 0, 'error' => substr($name . ' · ' . $msg, 0, 240),
             ));
-            tc_fail(isset($parsed['code']) && (int) $parsed['code'] >= 400 && (int) $parsed['code'] < 600 ? (int) $parsed['code'] : 502, $msg);
+            tc_fail(isset($parsed['code']) && (int) $parsed['code'] >= 400 && (int) $parsed['code'] < 600 ? tc_upstream_relay_status((int) $parsed['code']) : 502, $msg);
         }
         $chars = function_exists('mb_strlen') ? mb_strlen($parsed['markdown'], 'UTF-8') : strlen($parsed['markdown']);
         tc_push_log(array(

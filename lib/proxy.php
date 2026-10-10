@@ -3040,7 +3040,9 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
                 'error' => substr($msg, 0, 200),
             ), tc_log_chat_meta($body, $format)));
             tc_note_model_health($provider, $body, false);
-            if (!$headersSent) tc_fail($res['status'], $msg);
+            // 上游的 401/402/403 不能原样透传:本站也用这几个码表示「登录态失效 / 本站额度不足 /
+            // 本站权限不足」,透传会让「供应商密钥填错」被前端当成登录过期而直接登出。
+            if (!$headersSent) tc_fail(tc_upstream_relay_status($res['status']), $msg);
             exit;
         }
         if (!$headersSent) {
@@ -3108,7 +3110,7 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
             'error' => substr($msg, 0, 200),
         ), tc_log_chat_meta($body, $format)));
         tc_note_model_health($provider, $body, false);
-        tc_fail($res['status'], $msg);
+        tc_fail(tc_upstream_relay_status($res['status']), $msg);
     }
 
     $charged = 0;
@@ -3506,8 +3508,8 @@ function tc_generate_images($apiKeyOwner = null) {
         tc_fail(isset($res['code']) && $res['code'] ? $res['code'] : 502, tc_upstream_fail_message($res, isset($provider['name']) ? $provider['name'] : ''));
     }
     if ((int) (isset($res['status']) ? $res['status'] : 0) >= 400 && in_array((int) $res['status'], array(401, 402, 403, 429), true)) {
-        // 所有 Key 都失败:返回最后一次的原样错误
-        tc_fail((int) $res['status'], $lastMsg !== '' ? $lastMsg : tc_upstream_error_message(isset($res['body']) ? $res['body'] : '', (int) $res['status']));
+        // 所有 Key 都失败:返回最后一次的原样错误(上游 401/402/403 归一到 502,避免被前端当成本站登录态失效)
+        tc_fail(tc_upstream_relay_status((int) $res['status']), $lastMsg !== '' ? $lastMsg : tc_upstream_error_message(isset($res['body']) ? $res['body'] : '', (int) $res['status']));
     }
     // ---- 兜底:改走 chat/completions ----
     // 不少平台(如 api.apilio.ai 的 gemini / gpt-4o-image / nano-banana 等)根本没有
@@ -3553,8 +3555,8 @@ function tc_generate_images($apiKeyOwner = null) {
         }
     }
     if (!$items && $status >= 400) {
-        // 两条路径都没成功,返回上游原始错误
-        tc_fail($status, $lastMsg !== '' ? $lastMsg : ('上游 API 错误 (HTTP ' . $status . ')'));
+        // 两条路径都没成功,返回上游原始错误(401/402/403 归一到 502,见 tc_upstream_relay_status)
+        tc_fail(tc_upstream_relay_status($status), $lastMsg !== '' ? $lastMsg : ('上游 API 错误 (HTTP ' . $status . ')'));
     }
     // 为每个 URL 结果补一个同源代理地址:多数平台的图片在第三方对象存储域,
     // 部分网络下浏览器直连加载不到(后端却已成功出图),经本站转发即可稳定显示。
@@ -4383,7 +4385,7 @@ function tc_generate_video($apiKeyOwner = null) {
     }
     $status = (int) (isset($res['status']) ? $res['status'] : 0);
     if ($status >= 400) {
-        tc_fail($status, tc_upstream_error_message(isset($res['body']) ? $res['body'] : '', $status));
+        tc_fail(tc_upstream_relay_status($status), tc_upstream_error_message(isset($res['body']) ? $res['body'] : '', $status));
     }
     $j = json_decode((string) (isset($res['body']) ? $res['body'] : ''), true);
     if (!is_array($j)) $j = array();

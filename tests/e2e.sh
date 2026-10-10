@@ -908,6 +908,29 @@ BADPROV=$(curl -s "$BASE/api/providers" -H "$AUTH" | grep -o '"id":"[a-f0-9]*","
 badmsg=$(curl -s -X POST "$BASE/api/proxy/chat" -H "$UAUTH" -H "Content-Type: application/json" -d "{\"providerId\":\"$BADPROV\",\"model\":\"bad-model\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}")
 assert_contains "连接失败给出可定位提示" "$badmsg" '无法解析上游域名'
 
+# ---------- 供应商密钥错误的响应状态 ----------
+say "== 密钥错误的响应状态 =="
+# 上游对坏 Key 返回 401。本站也把 401 用作「登录态失效」,前端据此登出并跳登录页 ——
+# 若把上游的 401 原样透传,用户只是把供应商 Key 填错,前台一发消息就会被踢出登录。
+# 因此这类来自上游的认证/权限类状态必须归一到 502,错误原文仍要保留供排查。
+cat > "$TMP/badkey.json" <<EOF
+{"name":"BadKey","baseUrl":"http://127.0.0.1:$MOCK_PORT/v1","apiKey":"sk-fail","apiFormat":"chat","scope":"global","models":[{"id":"mock-model"},{"id":"mock-image","image":true}]}
+EOF
+curl -s -X POST "$BASE/api/providers" -H "$AUTH" -H "Content-Type: application/json" -d @"$TMP/badkey.json" > /dev/null
+BADKEYID=$(curl -s "$BASE/api/providers" -H "$AUTH" | grep -o '"id":"[a-f0-9]*","name":"BadKey"' | cut -d'"' -f4)
+[ -n "$BADKEYID" ] && ok "创建坏 Key 供应商" || bad "创建坏 Key 供应商"
+# 关键:状态码必须是 502(上游失败),绝不能是 401(否则前端会误判为登录过期并登出)
+bkcode=$(curl -s -o "$TMP/badkey-chat.json" -w '%{http_code}' -X POST "$BASE/api/proxy/chat" -H "$UAUTH" -H "Content-Type: application/json" -d "{\"providerId\":\"$BADKEYID\",\"model\":\"mock-model\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}")
+assert_eq "坏 Key 对话不返回 401(否则前台会被登出)" "$bkcode" "502"
+assert_has "坏 Key 错误原文仍回传" "$(cat "$TMP/badkey-chat.json")" 'invalid api key'
+bkstream=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/proxy/chat" -H "$UAUTH" -H "Content-Type: application/json" -d "{\"providerId\":\"$BADKEYID\",\"model\":\"mock-model\",\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}")
+assert_eq "坏 Key 流式对话同样不返回 401" "$bkstream" "502"
+bkimg=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/proxy/images" -H "$UAUTH" -H "Content-Type: application/json" -d "{\"providerId\":\"$BADKEYID\",\"model\":\"mock-image\",\"prompt\":\"x\"}")
+assert_eq "坏 Key 生图不返回 401" "$bkimg" "502"
+# 回归底线:真正未登录仍必须是 401,不能被这次改动误伤
+assert_eq "未登录调用仍是 401" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/proxy/chat" -H "Content-Type: application/json" -d '{"messages":[]}')" "401"
+assert_eq "无效令牌仍是 401" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/auth/me" -H "Authorization: Bearer bogus.token.x")" "401"
+
 # ---------- 授权规则 API 语义:单组更新 vs 全量替换 ----------
 say "== 授权规则语义 =="
 # 基准快照。注意:内置管理员组会在每次写库时自动补齐全部供应商授权(管理员永远全量可用),
